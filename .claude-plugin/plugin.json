@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "refactor-python",
+  "displayName": "Refactor Python (split god-modules safely)",
+  "version": "1.0.0",
+  "description": "Deterministic, verified decomposition of oversized Python modules using rope + AST oracles, with fan-out/fan-in subagents in git worktrees and file-size guardrails.",
+  "keywords": ["refactoring", "python", "rope", "worktree", "subagents", "guardrails"],
+  "license": "MIT"
+}

@@ -1,0 +1,18 @@
+# .github/workflows/guardrails.yml — fails the build when agents break size, complexity, or boundaries.
+name: guardrails
+on: [push, pull_request]
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ruff import-linter
+      - name: ruff (lint + complexity)
+        run: ruff check .
+      - name: file size budget
+        run: python3 scripts/check_file_length.py --baseline .refactor-baseline.json .
+      - name: import boundaries
+        run: |
+          if [ -f .importlinter ] || grep -q '\[tool.importlinter\]' pyproject.toml; then lint-imports; else echo "no import-linter config"; fi

@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "python3 scripts/check_file_length.py --hook", "timeout": 15 }
+        ]
+      }
+    ]
+  },
+  "worktree": { "baseRef": "head" }
+}

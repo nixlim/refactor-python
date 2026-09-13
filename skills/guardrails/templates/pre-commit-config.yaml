@@ -1,0 +1,22 @@
+# Merge into .pre-commit-config.yaml. Requires: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0   # pin to the version your CI uses
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: max-file-length
+        name: python file size budget (code lines)
+        entry: python3 scripts/check_file_length.py --baseline .refactor-baseline.json
+        language: system
+        types: [python]
+        pass_filenames: true
+      - id: import-linter
+        name: import boundaries
+        entry: lint-imports
+        language: system
+        pass_filenames: false
+        files: \.py$
