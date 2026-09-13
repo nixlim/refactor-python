@@ -14,6 +14,10 @@ With --apply it applies the changes and exits 0; exits 1 on any failure
 script stops at the first failure so the tree is never half-moved without a
 clear message).
 
+Resources rope must not see (importers that re-exports keep valid, files its parser
+cannot read) can be excluded with --ignore glob[,glob...] and/or one glob per line in
+<project>/.refactor/rope-ignore; both extend IGNORED.
+
 Requires: pip install rope
 """
 from __future__ import annotations
@@ -61,6 +65,7 @@ def main() -> int:
     ap.add_argument("--dest", required=True)
     ap.add_argument("--symbols", required=True, help="comma-separated top-level names, moved in order")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--ignore", default="", help="comma-separated extra globs rope must not see (see also .refactor/rope-ignore)")
     args = ap.parse_args()
 
     root = os.path.abspath(args.project)
@@ -75,7 +80,12 @@ def main() -> int:
             f.write('"""Extracted from %s."""\n' % os.path.relpath(src_path, root))
         print(f"created {os.path.relpath(dst_path, root)}")
 
-    project = Project(root, ropefolder=None, ignored_resources=IGNORED, ignore_syntax_errors=True)
+    ignored = list(IGNORED) + [g.strip() for g in args.ignore.split(",") if g.strip()]
+    ignore_file = os.path.join(root, ".refactor", "rope-ignore")
+    if os.path.exists(ignore_file):
+        with open(ignore_file, encoding="utf-8") as f:
+            ignored += [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    project = Project(root, ropefolder=None, ignored_resources=ignored, ignore_syntax_errors=True)
     try:
         for name in [s.strip() for s in args.symbols.split(",") if s.strip()]:
             project.validate()

@@ -30,7 +30,7 @@ run_codex() { # $@ = extra args; prompt on stdin
 
 if [ -n "$FOLLOW" ]; then
   printf '%s\n' "A reviewer disagrees with or wants evidence for one of your findings. Respond with evidence from the repository (file:line, commands you ran), then state AGREE, DISAGREE, or RETRACT for the finding, and why. Finding under discussion:
-$FOLLOW_TEXT" | "$CODEX" exec resume "$FOLLOW" -s read-only -c approval_policy=never -m "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" -o "$OUT" --json > "$LOG" 2>&1
+$FOLLOW_TEXT" | "$CODEX" exec resume "$FOLLOW" -c 'sandbox_mode="read-only"' -c approval_policy=never -m "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" -o "$OUT" --json > "$LOG" 2>&1
   rc=$?; [ $rc -ne 0 ] && { tail -20 "$LOG" >&2; exit 1; }; cat "$OUT"; exit 0
 fi
 
