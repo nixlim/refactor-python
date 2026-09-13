@@ -51,6 +51,44 @@ echo "optional: ${optional_missing[*]:-none}"
 echo "== codex (second-opinion review) =="
 CODEX=$(command -v codex 2>/dev/null); [ -z "$CODEX" ] && CODEX=$(find ~/.cursor/extensions ~/.vscode/extensions ~/.vscode-server/extensions -maxdepth 4 -name codex -type f 2>/dev/null | head -1)
 if [ -n "$CODEX" ]; then echo "codex=$CODEX ($("$CODEX" --version 2>/dev/null | head -1))"; else echo "WARN: codex not found; Phase 6a (GPT-5.6 Sol review) will be skipped. Install Codex CLI or the IDE extension, and the codex-orchestrator plugin."; fi
+echo "== rope parser =="
+if "$PY" -c "import rope" 2>/dev/null; then
+  "$PY" - <<'PYEOF'
+import fnmatch, os, sys
+from rope.refactor import patchedast
+skip = {".git", ".venv", "venv", "node_modules", "build", "dist", ".tox", ".mypy_cache", "__pycache__", ".worktrees", ".claude"}
+ignored = []
+for name in ("rope-ignore.txt", "rope-ignore"):
+    path = os.path.join(".refactor", name)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            ignored = [l.strip() for l in fh if l.strip() and not l.startswith("#")]
+        break
+def is_ignored(path):
+    return any(path == g or path.startswith(g.rstrip("/") + "/") or fnmatch.fnmatch(path, g) for g in ignored)
+bad = []
+for root, dirs, files in os.walk("."):
+    dirs[:] = [d for d in dirs if d not in skip and not d.endswith(".egg-info") and not is_ignored(os.path.join(root, d)[2:])]
+    for f in files:
+        if f.endswith(".py"):
+            path = os.path.join(root, f)[2:]
+            if is_ignored(path):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    patchedast.get_patched_ast(fh.read(), True)
+            except Exception as exc:
+                bad.append((path, type(exc).__name__))
+if bad:
+    print(f"WARN: rope's parser cannot read {len(bad)} file(s) not yet in .refactor/rope-ignore.txt; add them (or their directories):")
+    for path, name in bad:
+        print(f"  {path}  ({name})")
+else:
+    print("ok: rope's parser reads every .py file it will see" + (f" ({len(ignored)} ignore pattern(s) honoured)" if ignored else ""))
+PYEOF
+else
+  echo "skip: rope not installed yet (re-run after --install)"
+fi
 echo "== repo state =="
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   branch=$(git rev-parse --abbrev-ref HEAD)

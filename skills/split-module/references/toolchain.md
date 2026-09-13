@@ -40,9 +40,14 @@ dogfooding on a 19K-line module; keep these in mind when reading a dry run):
 - **rope inserts each moved definition at the top of the destination**, so a batch lands
   in reverse order (`B = A` above `A`). The script reorders into the requested order.
 - **rope must be told what not to parse**: `--ignore glob,glob` or one glob per line in
-  `.refactor/rope-ignore` (generated code, vendored trees, files whose imports
-  re-exports keep valid). Without it rope may refuse a move or rewrite an importer that
-  did not need rewriting.
+  `.refactor/rope-ignore.txt` (generated code, vendored trees, importers that the
+  package root's re-exports keep valid, and files rope's own parser cannot read: rope
+  1.14's patched AST raises `AttributeError` in `_consume_pattern` on some modern string
+  syntax). Without it rope may refuse a move outright or rewrite an importer that did not
+  need rewriting. `preflight.sh` runs rope's parser over every `.py` file and lists the
+  ones it cannot read so they can go straight into the ignore file. The `.txt` extension
+  matters in repositories whose conformance checks require every path to match a file
+  category.
 
 Known rope limits and what to do:
 

@@ -121,3 +121,22 @@ The approved models have 1M-token windows, so a 12K-line file (~120–160K token
 technically fit. Do not do it anyway: quality degrades with context length ("context rot"),
 the Read tool will not deliver it in one call, and the point of fan-out is to keep each
 worker's working set small enough to reason about precisely.
+
+## Before the first move: what rope must not see
+
+Two things decide whether rope can do a clean move in a given repository, and both are
+preflight facts, not extractor judgment calls:
+
+1. **Importers the re-exports keep valid.** After Phase 3 the package root re-exports every
+   moved name, so files that reach the module through `pkg.mod.name` attribute access
+   (sibling modules, shims, tests that patch by attribute) need no rewrite. If rope can see
+   them it rewrites them anyway, which edits bodies the oracle has frozen. List them in
+   `.refactor/rope-ignore.txt` (one glob per line) before Wave 0.
+2. **Files rope's parser cannot read.** `bash preflight.sh` prints the `.py` files rope's
+   patched AST rejects; put them in the same ignore file. rope only needs to see the
+   package being split plus the modules it imports from.
+
+The tool guards the rest: `rope_move.py` restores bare names in the source, repairs the
+destination's imports and lands moved statements in dependency order, and the strict body
+oracle refuses anything that still differs.
+
