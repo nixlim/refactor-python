@@ -124,6 +124,9 @@ def main() -> int:
     ap.add_argument("--repo-root", default=".")
     ap.add_argument("--module-name", default="", help="dotted import name, e.g. app.engine")
     ap.add_argument("--min-cluster-loc", type=int, default=150, help="only report clusters >= this many lines")
+    ap.add_argument("--exclude-hubs", type=int, default=None,
+                    help="remove the N highest fan-in symbols (hubs) before clustering; default: auto (until the largest cluster < 40%% of defs)")
+    ap.add_argument("--max-hubs", type=int, default=12, help="upper bound for auto hub removal")
     args = ap.parse_args()
 
     with open(args.module, encoding="utf-8") as f:
@@ -166,8 +169,53 @@ def main() -> int:
     # module-level mutable state is reported separately because it needs one owner.
     def_nodes = [n for n in order if symbols[n]["kind"] in ("function", "class")]
     def_edges = [(a, b) for a, b in edges if a in def_nodes and b in def_nodes]
-    comps = connected_components(def_nodes, def_edges)
+
+    # --- hub detection: symbols referenced by many others glue everything into one component.
+    fan_in = defaultdict(int)
+    for a, b in def_edges:
+        fan_in[b] += 1
+    hub_order = sorted(def_nodes, key=lambda n: (-fan_in[n], symbols[n]["line"]))
+    hubs = []
+    if args.exclude_hubs is not None:
+        hubs = hub_order[: args.exclude_hubs]
+        core_nodes = [n for n in def_nodes if n not in hubs]
+        comps = connected_components(core_nodes, [(a, b) for a, b in def_edges if a in core_nodes and b in core_nodes])
+    else:  # auto: peel hubs until the largest component is < 40% of defs (or max-hubs reached)
+        for k in range(0, args.max_hubs + 1):
+            hubs = hub_order[:k]
+            core_nodes = [n for n in def_nodes if n not in hubs]
+            comps = connected_components(core_nodes, [(a, b) for a, b in def_edges if a in core_nodes and b in core_nodes])
+            if not comps or max(len(c) for c in comps) < 0.4 * max(1, len(core_nodes)):
+                break
     comps.sort(key=lambda c: -sum(symbols[n]["loc"] for n in c))
+
+    # --- label propagation communities on the hub-free graph (finer than components when one
+    # component remains large). Deterministic: fixed iteration order, ties broken by smallest label.
+    def label_propagation(nodes, e_list, rounds=20):
+        adj = defaultdict(set)
+        for a, b in e_list:
+            adj[a].add(b); adj[b].add(a)
+        label = {n: i for i, n in enumerate(nodes)}
+        for _ in range(rounds):
+            changed = False
+            for n in nodes:
+                if not adj[n]:
+                    continue
+                counts = defaultdict(int)
+                for m in adj[n]:
+                    counts[label[m]] += 1
+                best = min(counts, key=lambda l: (-counts[l], l))
+                if counts[best] > counts.get(label[n], 0) or (counts[best] == counts.get(label[n], 0) and best < label[n]):
+                    if label[n] != best:
+                        label[n] = best; changed = True
+            if not changed:
+                break
+        groups = defaultdict(list)
+        for n in nodes:
+            groups[label[n]].append(n)
+        return sorted(groups.values(), key=lambda g: -sum(symbols[x]["loc"] for x in g))
+    core_nodes = [n for n in def_nodes if n not in hubs]
+    communities = label_propagation(core_nodes, [(a, b) for a, b in def_edges if a in core_nodes and b in core_nodes])
 
     globals_used = []
     for name in order:
@@ -205,7 +253,20 @@ def main() -> int:
         for fn, gnames in globals_used:
             out.append(f"- `{fn}` declares global {', '.join(gnames)}")
     out.append("")
-    out.append(f"## Suggested clusters (weakly connected components; showing >= {args.min_cluster_loc} LOC)")
+    out.append(f"## Hub symbols (highest fan-in; removed before clustering: {len(hubs)})")
+    out.append("Move these FIRST into a small `_core.py`/`_state.py`/`_base.py` so the rest of the graph falls apart. "
+               "A hub that is a class used as a base class or a module-wide config/logger belongs in `_core.py`; "
+               "a hub that is pure utility belongs in `_util.py`.")
+    for n in hub_order[: max(len(hubs), 15)]:
+        s_ = symbols[n]
+        tag = " (REMOVED)" if n in hubs else ""
+        out.append(f"- `{n}` ({s_['kind']}, {s_['loc']} LOC, fan-in {fan_in[n]}, fan-out {len(s_['refs'])}){tag}")
+    largest = max((len(c) for c in comps), default=0)
+    out.append(f"- after removing {len(hubs)} hubs: {len(comps)} components, largest has {largest} of {len(core_nodes)} defs")
+    if largest >= 0.4 * max(1, len(core_nodes)):
+        out.append("- WARNING: still one dominant component. Use the label-propagation communities below, or re-run with --exclude-hubs N for larger N.")
+    out.append("")
+    out.append(f"## Suggested clusters (connected components after hub removal; showing >= {args.min_cluster_loc} LOC)")
     shown = 0
     for i, comp in enumerate(comps, 1):
         comp_loc = sum(symbols[n]["loc"] for n in comp)
@@ -219,6 +280,22 @@ def main() -> int:
         out.append("- members: " + ", ".join(f"`{n}`" for n in comp_sorted[:40]) + (" ..." if len(comp_sorted) > 40 else ""))
         out.append(f"- referenced from outside cluster by: {', '.join(external_in[:15]) or 'none (leaf-safe)'}")
         out.append(f"- references outside cluster: {', '.join(external_out[:15]) or 'none'}")
+    out.append("")
+    out.append("## Communities (label propagation on the hub-free graph; use when a component is still too big)")
+    shown = 0
+    for i, comm in enumerate(communities, 1):
+        comm_loc = sum(symbols[n]["loc"] for n in comm)
+        if comm_loc < args.min_cluster_loc and shown >= 3:
+            continue
+        if shown >= 25:
+            out.append(f"- ... {len(communities) - shown} more communities")
+            break
+        shown += 1
+        cs = sorted(comm, key=lambda n: symbols[n]["line"])
+        ext_in = sorted({a for a, b in def_edges if b in comm and a not in comm and a not in hubs})
+        ext_out = sorted({b for a, b in def_edges if a in comm and b not in comm and b not in hubs})
+        out.append(f"### Community {i}: {comm_loc} LOC, {len(comm)} symbols; in-edges from {len(ext_in)} outside symbols, out-edges to {len(ext_out)}")
+        out.append("- members: " + ", ".join(f"`{n}`" for n in cs[:40]) + (" ..." if len(cs) > 40 else ""))
     out.append("")
     out.append("## Largest symbols")
     for n in sorted(order, key=lambda n: -symbols[n]["loc"])[:15]:
@@ -239,7 +316,10 @@ def main() -> int:
                 for s in (symbols[n] for n in order)
             ],
             "edges": edges,
+            "hubs": hubs,
+            "fan_in": {n: fan_in[n] for n in def_nodes},
             "clusters": [sorted(c, key=lambda n: symbols[n]["line"]) for c in comps],
+            "communities": [sorted(c, key=lambda n: symbols[n]["line"]) for c in communities],
             "mutable_state": ms,
             "external_dependents": deps,
         }

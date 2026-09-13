@@ -74,8 +74,10 @@ state, or money.
 4. Print the final plan summary (target modules, waves, state owners) to the user. In an
    interactive session, wait for approval before Phase 3.
 
-Read `references/playbook.md` §"Choosing seams" if the planner's clusters look wrong
-(e.g. one 9,000-line cluster): that section explains how to cut cycles.
+If `inventory.md` reports one dominant component even after hub peeling, re-run
+`inventory.py --exclude-hubs 20` (or more) and give the planner both outputs; the planner
+must not hand-cut a component, it must plan Wave 0 = hubs → `_core.py` and take the
+post-peel clusters/communities from there. See `references/playbook.md` §"Choosing seams".
 
 ## Phase 3: Convert to a package (one mechanical step)
 

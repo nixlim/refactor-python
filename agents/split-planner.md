@@ -23,14 +23,23 @@ line ranges, intra-module edges, mutable state, external dependents, suggested c
 3. If `radon` is present, `radon cc -s -n C <module>` ranks complex functions; they
    deserve their own target modules more often than not. If `vulture` is present,
    `vulture <module> --min-confidence 80` lists dead code; list it under "delete first".
-4. Decide target modules by responsibility (see the split-module skill's
-   `references/playbook.md` §Choosing seams). Prefer 3–8 targets of 150–400 code lines.
-5. For every mutable module-level assignment and every `global` statement, name the ONE
+4. **Start from the "Hub symbols" section.** Hubs (highest fan-in: config objects,
+   loggers, base classes, shared exceptions) glue the module into one component. Wave 0 of
+   every plan is "move hubs + module-level state into `_core.py` (or `_state.py`/`_base.py`
+   /`_util.py` by role)". Then use "Suggested clusters" (components after hub removal) as
+   the starting targets; if one is still over ~1,500 LOC, use the "Communities" section or
+   re-run `inventory.py --exclude-hubs N` with a larger N and read the new output. Cutting
+   seams by hand across a 10K+ line component is not allowed; the graph decides, you name
+   and adjust.
+5. Decide target modules by responsibility (see the split-module skill's
+   `references/playbook.md` §Choosing seams). Prefer 3–8 targets of 150–400 code lines;
+   merge tiny communities into a neighbour, split a large one along a hub of its own.
+6. For every mutable module-level assignment and every `global` statement, name the ONE
    module that will own it and require it to be moved before its users.
-6. Identify circular-import risks: any symbol in target T that references a symbol that
+7. Identify circular-import risks: any symbol in target T that references a symbol that
    will remain in `__init__.py`. Resolve in the plan (move the referenced symbol too, or
    mark it `TYPE_CHECKING`-only if it is only used in annotations).
-7. Order clusters into waves. A wave contains clusters whose symbol sets are disjoint and
+8. Order clusters into waves. Wave 0 = hubs and state (sequential, one extractor). A wave contains clusters whose symbol sets are disjoint and
    whose references do not cross each other. Wave 1 = leaves and state; later waves =
    dependents.
 

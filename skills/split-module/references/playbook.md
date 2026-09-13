@@ -13,9 +13,14 @@ Good targets share a *responsibility* and have few edges out. Use these signals:
    `service.py` (orchestration), `validation.py`, `render.py`. A target module should
    be describable in one sentence.
 3. **One giant component** is the common case: everything references everything through
-   a few hub symbols (a config object, a base class, a logger). Break it by moving the
-   hubs into a small `_core.py`/`_state.py` first; the remaining graph usually falls into
-   3–8 components.
+   a few hub symbols (a config object, a base class, a logger). `inventory.py` handles this:
+   it ranks symbols by fan-in, peels hubs until the largest component is under 40% of the
+   definitions (`--exclude-hubs N` to force N), reports the components that remain, and
+   also runs label-propagation communities for anything still too coarse. The plan's
+   Wave 0 moves the peeled hubs and module-level state into `_core.py`; afterwards the
+   clusters are extractable independently. If auto-peeling reaches `--max-hubs` (12) and
+   still reports one dominant component, the module is coupled through *data flow* rather
+   than a few names; use the Communities section and accept larger, fewer targets.
 4. **Aim for 150–400 code lines per target module**, hard cap 500. Below 100 lines you
    are creating navigation overhead for agents; above 500 you have not finished.
 5. **Order inside a cluster** = topological order of references (dependencies before
