@@ -49,8 +49,19 @@ python3 $S/snapshot_bodies.py snapshot <pkg_dir> --out .refactor/before.json
 python3 $S/check_file_length.py --write-baseline .refactor-baseline.json .
 ```
 
+```bash
+python3 $S/type_baseline.py snapshot --pkg <pkg_dir>      # grandfathers pre-existing mypy/pyright errors
+```
+
 `<pkg_dir>` is the directory that will contain the resulting package (usually the
-target module's parent directory). Commit both files: `git add .refactor .refactor-baseline.json && git commit -m "refactor: freeze baseline for split of <module>"`.
+target module's parent directory). Commit all three files:
+`git add .refactor .refactor-baseline.json && git commit -m "refactor: freeze baseline for split of <module>"`.
+
+The type baseline is a ratchet: the gate fails only on type errors that are *new* relative
+to it (keyed by code+message, so an error that moves with its code is not new), and
+`type_baseline.py check --update` shrinks it when errors get fixed. If you skipped this
+step, the first gate run creates it automatically from committed HEAD and prints
+`BASELINED types`; commit the file it wrote. Never baseline from a dirty tree.
 
 Characterization tests: run `pytest --co -q | grep -c <module_stem>` (or coverage if
 configured). If the module has little or no test coverage of its public functions, first

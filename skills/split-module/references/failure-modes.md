@@ -10,7 +10,8 @@ skill exists to neutralize one of the rows below.
 | Dropped code | A helper vanishes during a "move"; tests that don't cover it stay green | `snapshot_bodies.py compare` → `MISSING` | rope moves whole definitions; agents never cut/paste |
 | Silent behavior edit | Agent "cleans up" a body while moving it | `compare` → `CHANGED`; reviewer | "never edit bodies" rule; `--strict-bodies` at finalize |
 | Invented code | Agent writes a replacement instead of moving | `compare` → `ADDED` | rope; extractor brief lists exact symbols |
-| Broken imports elsewhere | A caller in another package still imports the old path | `compileall`, mypy/pyright, tests | rope rewrites project-wide imports |
+| Broken imports elsewhere | A caller in another package still imports the old path | `compileall`, type ratchet, tests | rope rewrites project-wide imports |
+| Undefined name after post-processing | Bare name left by de-qualification, dropped import, self-import | type ratchet (`type_baseline.py check`: new `name-defined`/`attr-defined` vs baseline) | name-scoped de-qualification; import-only edits |
 | Circular import | `partially initialized module` at import time | tests (import fails), `lint-imports` | playbook §Circular imports; thin `__init__` |
 | Forked module state | Two modules each define `REGISTRY = {}` | reviewer (inventory lists state); tests if covered | single-owner rule; move state first |
 | Lazy-import cover-up | Extractor hides a cycle with a function-local import | reviewer (must be flagged in report) | rule: flag every local import |

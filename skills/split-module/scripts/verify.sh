@@ -35,10 +35,13 @@ run "compile"       python3 -m compileall -q "$PKG"
 run "ruff-lint"     ruff check "$PKG"
 run "file-length"   python3 "$HERE/check_file_length.py" "$PKG"
 
-if [ -n "${REFACTOR_TYPE_CMD:-}" ]; then run "types" bash -c "$REFACTOR_TYPE_CMD"
-elif command -v mypy >/dev/null 2>&1; then run "types" mypy --no-error-summary "$PKG"
-elif command -v pyright >/dev/null 2>&1; then run "types" pyright "$PKG"
-else results+=("SKIP types (no mypy/pyright)"); fi
+# Types: ratcheted against .refactor/type-baseline.json. First run with a checker available
+# records pre-existing errors from committed HEAD (never from the dirty tree); after that
+# only NEW errors fail. Undefined names left by a move are exactly what this catches.
+if [ -n "${REFACTOR_TYPE_CMD:-}" ] || command -v mypy >/dev/null 2>&1 || command -v pyright >/dev/null 2>&1; then
+  run "types" python3 "$HERE/type_baseline.py" check --pkg "$PKG" --auto-baseline
+  grep -q '^BASELINED types' "$LOG" && results+=("NOTE types: baseline created from HEAD; commit .refactor/type-baseline.json")
+else results+=("SKIP types (no mypy/pyright; run preflight.sh --install)"); fi
 
 if command -v lint-imports >/dev/null 2>&1 && { [ -f .importlinter ] || grep -q '\[tool.importlinter\]' pyproject.toml 2>/dev/null || grep -q '\[importlinter\]' setup.cfg 2>/dev/null; }; then
   run "import-contracts" lint-imports

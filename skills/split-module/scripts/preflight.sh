@@ -89,6 +89,9 @@ PYEOF
 else
   echo "skip: rope not installed yet (re-run after --install)"
 fi
+echo "== type ratchet =="
+python3 "$(dirname "$0")/type_baseline.py" status 2>/dev/null || echo "type ratchet: unavailable"
+echo "(first gate run with a checker present records pre-existing errors from committed HEAD; only NEW errors fail afterwards)"
 echo "== repo state =="
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   branch=$(git rev-parse --abbrev-ref HEAD)

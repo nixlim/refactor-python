@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -d .refactor ]; then echo \"refactor-python: split in progress. $(python3 \"${CLAUDE_PLUGIN_ROOT}\"/skills/split-module/scripts/type_baseline.py status 2>/dev/null)\"; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
