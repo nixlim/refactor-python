@@ -25,6 +25,25 @@ dry-run description first so the extractor can review the touched-file list befo
 applying. Rope needs to see the whole project (`--project .`), which is why the
 extractor runs it from the repo root inside its worktree.
 
+Known rope behaviors that `rope_move.py` post-processes automatically (found while
+dogfooding on a 19K-line module; keep these in mind when reading a dry run):
+
+- **rope qualifies remaining references in the source** (`name(...)` becomes
+  `pkg.mod.dest.name(...)` plus `import pkg.mod.dest`). That edits every referencing
+  body and trips the `bodies-unchanged` oracle. The script restores bare names for the
+  moved symbols only and writes `from pkg.mod.dest import name, ...`; `--keep-qualified-refs`
+  disables this.
+- **rope writes `from <source> import ...` into the destination** listing every source
+  global the moved code might need, including the names just moved there (a load-time
+  cycle) and names the source root only re-exports. The script drops self-imports and
+  points re-exported names at their owner module.
+- **rope inserts each moved definition at the top of the destination**, so a batch lands
+  in reverse order (`B = A` above `A`). The script reorders into the requested order.
+- **rope must be told what not to parse**: `--ignore glob,glob` or one glob per line in
+  `.refactor/rope-ignore` (generated code, vendored trees, files whose imports
+  re-exports keep valid). Without it rope may refuse a move or rewrite an importer that
+  did not need rewriting.
+
 Known rope limits and what to do:
 
 - **Symbol uses module-level state via a bare name** (e.g. `REGISTRY[...]` inside a moved

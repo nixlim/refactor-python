@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import re
 import sys
 
 try:
@@ -76,23 +77,31 @@ def restore_bare_refs(src_path: str, dest_mod: str, moved: list[str]) -> None:
     rope rewrites `name(...)` to `pkg.mod.dest.name(...)` in every remaining body of the
     source and adds `import pkg.mod.dest`. Restore the bare names and turn that import into
     `from pkg.mod.dest import name, ...`, so only import lines change and the body-hash
-    oracle stays clean. Validated with ast.parse before anything is written.
+    oracle stays clean.
+
+    Only the names in `moved` are de-qualified (word-bounded regex), never a blanket
+    `pkg.mod.dest.` strip: a qualified reference to some *other* member of the destination
+    (from an earlier batch run with --keep-qualified-refs, or a docstring mention) must
+    keep working. If such references remain, rope's `import pkg.mod.dest` is kept and the
+    from-import is added next to it. Validated with ast.parse before anything is written.
     """
     with open(src_path, encoding="utf-8") as f:
         text = f.read()
-    qualified = dest_mod + "."
-    count = text.count(qualified)
-    text = text.replace(qualified, "")
+    pattern = re.compile(r"\b" + re.escape(dest_mod) + r"\.(" + "|".join(re.escape(n) for n in moved) + r")\b")
+    text, count = pattern.subn(r"\1", text)
+    remaining = len(re.findall(r"\b" + re.escape(dest_mod) + r"\.", text))
     import_line = f"import {dest_mod}\n"
     from_block = f"from {dest_mod} import (\n" + "".join(f"    {n},\n" for n in moved) + ")\n"
     if import_line in text:
-        text = text.replace(import_line, from_block, 1)
+        text = text.replace(import_line, (import_line if remaining else "") + from_block, 1)
     elif count:
         raise RuntimeError(f"source has {count} qualified references but no `import {dest_mod}` line")
     ast.parse(text)
     with open(src_path, "w", encoding="utf-8") as f:
         f.write(text)
-    print(f"source: restored {count} bare reference(s) to {', '.join(moved)}; `import {dest_mod}` -> from-import")
+    print(f"source: restored {count} bare reference(s) to {', '.join(moved)}; "
+          + (f"`import {dest_mod}` kept ({remaining} other qualified use(s)) and " if remaining else f"`import {dest_mod}` -> ")
+          + "from-import added")
 
 
 def _reexport_owners(src_text: str, src_mod: str) -> dict[str, str]:

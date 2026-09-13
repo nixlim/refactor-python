@@ -17,6 +17,7 @@ skill exists to neutralize one of the rows below.
 | Partial read of the file | Agent reasons over the first 2,000 lines as if whole | inventory-based planning; extractor never Reads whole file | playbook §Reading large files |
 | Tangled commit | Refactor mixed with a bug fix or feature | reviewer; one-cluster-per-commit rule | commit message convention `refactor(<name>):` only |
 | Merge conflict resolved by hand | Manual 3-way merge of a 10K-line file loses a hunk | `compare` after merge | rule: abort and re-extract on updated base |
+| Tool side effects counted as edits | rope qualifies references / writes self-imports / reverses order; oracle reports CHANGED | `compare` → `CHANGED` (this is how it was found) | `rope_move.py` post-processing (import-line edits only, ast-validated) |
 | Regrowth after split | The new modules balloon again next week | `check_file_length.py` in hook + CI; import-linter | guardrails skill; baseline removal at finalize |
 | Design drift | Extractor adds an ABC/registry to make a move compile | reviewer | rule: no new abstractions during a split |
 | Wrong base branch | Worktree branched from `main`, commits do not apply to the refactor branch | preflight NOTE; merge fails | `worktree.baseRef: "head"` in settings |
