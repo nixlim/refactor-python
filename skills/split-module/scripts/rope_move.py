@@ -149,6 +149,55 @@ def fix_dest_imports(dst_path: str, src_path: str, src_mod: str, moved: list[str
     print(f"dest: {len(edits)} source import line(s) repaired (self-imports dropped, re-exported names pointed at their owner modules)")
 
 
+def reorder_dest(dst_path: str, moved: list[str]) -> None:
+    """Put the moved top-level statements in the order they were requested.
+
+    rope inserts each moved definition at the top of the destination, so a sequence of
+    moves lands in reverse order and an alias like `B = A` ends up above `A = ...`.
+    Whole statements only (decorators and directly attached leading comments travel
+    with their statement); no body or reference is touched; validated with ast.parse.
+    """
+    with open(dst_path, encoding="utf-8") as f:
+        text = f.read()
+    lines = text.splitlines(keepends=True)
+    tree = ast.parse(text)
+    spans: dict[str, tuple[int, int]] = {}
+    for node in tree.body:
+        names: list[str] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        hit = [n for n in names if n in moved]
+        if not hit:
+            continue
+        start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]) - 1
+        while start > 0 and lines[start - 1].lstrip().startswith("#"):
+            start -= 1
+        spans[hit[0]] = (start, node.end_lineno)
+    if len(spans) != len(moved):
+        print(f"dest: order left as is ({len(spans)} of {len(moved)} moved names found as top-level statements)")
+        return
+    order_now = sorted(spans, key=lambda n: spans[n][0])
+    if order_now == moved:
+        return
+    blocks = {n: "".join(lines[a:b]) for n, (a, b) in spans.items()}
+    cut = set()
+    for a, b in spans.values():
+        cut.update(range(a, b))
+    keep = [l for i, l in enumerate(lines) if i not in cut]
+    body = "".join(keep).rstrip("\n") + "\n"
+    for n in moved:
+        block = blocks[n].rstrip("\n") + "\n"
+        body += "\n\n" + block
+    ast.parse(body)
+    with open(dst_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    print(f"dest: {len(moved)} moved statement(s) reordered into the requested (dependency) order")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", default=".")
@@ -206,6 +255,7 @@ def main() -> int:
             dst_mod = libutils.modname(libutils.path_to_resource(project, dst_path))
             restore_bare_refs(src_path, dst_mod, moved)
             fix_dest_imports(dst_path, src_path, src_mod, moved)
+            reorder_dest(dst_path, moved)
     except Exception as e:  # rope raises many specific exception types
         print(f"MOVE FAILED: {type(e).__name__}: {e}", file=sys.stderr)
         print("Nothing further was applied. Fix the cause (usually: symbol has module-level "
