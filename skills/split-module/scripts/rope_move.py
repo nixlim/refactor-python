@@ -16,7 +16,7 @@ clear message).
 
 Resources rope must not see (importers that re-exports keep valid, files its parser
 cannot read) can be excluded with --ignore glob[,glob...] and/or one glob per line in
-<project>/.refactor/rope-ignore; both extend IGNORED.
+<project>/.refactor/rope-ignore.txt (or rope-ignore); both extend IGNORED.
 
 Requires: pip install rope
 """
@@ -81,10 +81,12 @@ def main() -> int:
         print(f"created {os.path.relpath(dst_path, root)}")
 
     ignored = list(IGNORED) + [g.strip() for g in args.ignore.split(",") if g.strip()]
-    ignore_file = os.path.join(root, ".refactor", "rope-ignore")
-    if os.path.exists(ignore_file):
-        with open(ignore_file, encoding="utf-8") as f:
-            ignored += [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    for ignore_name in ("rope-ignore.txt", "rope-ignore"):
+        ignore_file = os.path.join(root, ".refactor", ignore_name)
+        if os.path.exists(ignore_file):
+            with open(ignore_file, encoding="utf-8") as f:
+                ignored += [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            break
     project = Project(root, ropefolder=None, ignored_resources=ignored, ignore_syntax_errors=True)
     try:
         for name in [s.strip() for s in args.symbols.split(",") if s.strip()]:
