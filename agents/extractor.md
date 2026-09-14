@@ -61,6 +61,10 @@ Retry the gate at most twice. Then report `gate: fail` with the failure section 
 - Do not run the full test suite more than 3 times; if it is slow, the orchestrator will
   run it at merge.
 - Do not merge, push, or switch branches.
+- Never edit `__all__` (if rope changed it, restore the baseline literal) and never touch
+  `CHANGELOG.md`, docs, or tests; report what you would have changed in `notes` instead.
+- `commit` in your report must be the SHA `git rev-parse HEAD` prints after your commit;
+  the orchestrator merges by that SHA, not by `branch`.
 
 ## Report (last message, JSON only)
 ```json

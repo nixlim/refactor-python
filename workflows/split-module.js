@@ -1,6 +1,6 @@
 export const meta = {
   name: 'split-module-workflow',
-  description: 'Split one or more oversized Python modules into packages: plan -> critique -> parallel rope extraction in worktrees -> gated merge -> independent review.',
+  description: 'Split one or more oversized Python modules into packages: plan -> critique -> sequential rope extraction in worktrees -> gated merge by commit -> finalize -> independent review.',
   whenToUse: 'A plan with more than ~6 clusters, or several god-modules at once. For one small module use the /refactor-python:split-module skill directly.',
   phases: [
     { title: 'Preflight' },
@@ -9,19 +9,31 @@ export const meta = {
     { title: 'Package' },
     { title: 'Extract' },
     { title: 'Merge' },
+    { title: 'Finalize' },
     { title: 'Codex review' },
     { title: 'Review' },
-    { title: 'Finalize' },
   ],
 }
 
-// args: { modules: ["app/core/engine.py", ...], pkgDir?: "app/core", maxLines?: 500 }
+// args: { modules: ["app/core/engine.py", ...], pkgDir?: "app/core", maxLines?: 500,
+//         parallel?: false,                       // extract a wave's clusters concurrently (only sensible across different source modules)
+//         doneWaves?: { "<stem>": [0, 1] },       // waves already closed on the branch (restart after a stop; derive from the re-export commits)
+//         doneClusters?: { "<stem>": ["name"] }, // clusters of the current wave already merged (derive from git ls-tree of the package)
+//         codexDone?: { "<module path>": {ok, path, verdict, thread} } }  // a Codex review the orchestrator ran detached
+// Restart rule: prefer a FRESH launch with doneWaves/doneClusters over resumeFromRunId. Resume caching is a prefix of the
+// agent() call sequence, so after any control-flow change the cached extract results of an old tip are replayed and merged,
+// and a resumed instance reuses worktree numbers. Remove the run's worktrees and branches before relaunching.
 const modules = (args && args.modules) || []
 if (!modules.length) throw new Error('args.modules is required: ["path/to/module.py", ...]')
 const maxLines = (args && args.maxLines) || 500
 const S = '${CLAUDE_PLUGIN_ROOT}/skills/split-module/scripts'
 const RULES = `Rules: move only with ${S}/rope_move.py; never edit bodies; never add abstractions; ` +
-  `never Read a god-module whole; one cluster per commit; gate with ${S}/verify.sh before every commit.`
+  `never Read a god-module whole; never edit __all__, CHANGELOG.md, docs or tests; one cluster per commit; gate with ${S}/verify.sh before every commit; ` +
+  `report the commit SHA (git rev-parse HEAD after your commit).`
+const PARALLEL = !!(args && args.parallel)
+const DONE_WAVES = (args && args.doneWaves) || {}
+const DONE_CLUSTERS = (args && args.doneClusters) || {}
+const CODEX_DONE = (args && args.codexDone) || {}
 
 const PLAN_SCHEMA = {
   type: 'object', required: ['planPath', 'pkgDir', 'waves'],
@@ -34,7 +46,8 @@ const PLAN_SCHEMA = {
 }
 const VERDICT = { type: 'object', required: ['verdict'], properties: { verdict: { type: 'string', enum: ['APPROVE', 'REVISE', 'BLOCK', 'REJECT'] }, blocking: { type: 'array', items: { type: 'string' } }, disputed: { type: 'array', items: { type: 'string' } } } }
 const EXTRACT = { type: 'object', required: ['cluster', 'branch', 'gate'], properties: { cluster: { type: 'string' }, branch: { type: 'string' }, commit: { type: ['string', 'null'] }, gate: { type: 'string', enum: ['pass', 'fail'] }, notes: { type: 'string' } } }
-const GATE = { type: 'object', required: ['gate'], properties: { gate: { type: 'string', enum: ['PASS', 'FAIL'] }, cause: { type: 'string' } } }
+const GATE = { type: 'object', required: ['gate'], properties: { gate: { type: 'string', enum: ['PASS', 'FAIL'] }, cause: { type: 'string' }, commit: { type: 'string' } } }
+const isConflict = (m) => !!(m && /conflict/i.test(String(m.cause || '')))   // gate-runners sometimes describe the conflict instead of returning the literal
 
 // ---------------------------------------------------------------- Preflight
 phase('Preflight')
@@ -92,75 +105,141 @@ await pipeline(approved, (plan) => agent(
 ))
 
 // ---------------------------------------------------- Extract + Merge waves
+const waveReports = []
 for (const plan of approved) {
   const stem = plan.mod.replace(/^.*\//, '').replace(/\.py$/, '')
   const src = plan.mod.replace(/\.py$/, '/__init__.py')
+  const pkgPath = plan.mod.replace(/\.py$/, '')
   const snapshot = `.refactor/before-${stem}.json`
+  const doneWaves = new Set(DONE_WAVES[stem] || [])
+  const doneClusters = new Set(DONE_CLUSTERS[stem] || [])
+  const brief = (c) =>
+    `Cluster: ${c.cluster}\nSource module: ${src}\nDestination module: ${c.dest}\nSymbols to move, in this order: ${c.symbols.join(', ')}\n` +
+    `Snapshot: ${snapshot}\nPackage dir for the gate: ${plan.pkgDir}\nScripts: ${S}\n${RULES}\nReturn the JSON report described in your instructions.`
+  const extract = (c, label, extra) => agent(brief(c), { label, phase: 'Extract', agentType: 'refactor-python:extractor', isolation: 'worktree', schema: EXTRACT, ...(extra || {}) })
+  // Extract once, retry once on Opus 5. A passing report without a commit SHA is not a pass.
+  const runCluster = async (c) => {
+    let r = await extract(c, `extract:${stem}:${c.cluster}`)
+    if (!r || r.gate !== 'pass' || !r.commit) {
+      log(`${stem} ${c.cluster}: extractor failed (${r && r.notes}); retrying on Opus 5`)
+      r = await extract(c, `extract2:${stem}:${c.cluster}`, { model: 'claude-opus-5' })
+    }
+    return r && r.gate === 'pass' && r.commit ? r : null
+  }
+  // Merge BY COMMIT SHA, never by the reported branch name; an unchanged HEAD is a failure, an ancestor is already merged.
+  const mergeOne = (r, c) => agent(
+    `On branch ${pre.branch} in the repository root. The extractor for cluster "${c.cluster}" committed ${r.commit}; merge BY COMMIT, never by branch name.\n` +
+    `1. Require 'git rev-parse --abbrev-ref HEAD' to print ${pre.branch} and 'git status --porcelain --untracked-files=no' to be empty; otherwise return {gate:"FAIL", cause:"dirty or wrong branch"}.\n` +
+    `2. If 'git merge-base --is-ancestor ${r.commit} HEAD' succeeds the commit is already merged: skip to step 4.\n` +
+    `3. before=$(git rev-parse HEAD); 'git merge --no-ff ${r.commit} -m "Merge ${c.cluster} (${r.commit})"'. On conflicts run 'git merge --abort' and return {gate:"FAIL", cause:"conflict"}. Then require HEAD to differ from before; otherwise return {gate:"FAIL", cause:"nothing merged"}.\n` +
+    `4. Run exactly: bash ${S}/verify.sh --pkg ${plan.pkgDir} --snapshot ${snapshot} --strict-bodies\nReturn {gate, cause, commit:<git rev-parse HEAD>} from its "== gate results ==" block. Do not fix anything.`,
+    { label: `merge:${stem}:${c.cluster}`, phase: 'Merge', agentType: 'refactor-python:gate-runner', schema: GATE },
+  )
 
   for (let w = 0; w < plan.waves.length; w++) {
     const wave = plan.waves[w]
+    if (doneWaves.has(w)) { waveReports.push({ mod: plan.mod, wave: w, merged: wave.map((c) => c.cluster), failed: [], end: 'done-before-launch' }); log(`${stem} wave ${w + 1}: already closed on the branch, skipping`); continue }
+    const merged = []
+    const failed = []
+    const pending = wave.filter((c) => !doneClusters.has(c.cluster))
+    for (const c of wave) if (doneClusters.has(c.cluster)) merged.push(c.cluster)
+
     phase('Extract')
-    const brief = (c) =>
-      `Cluster: ${c.cluster}\nSource module: ${src}\nDestination module: ${c.dest}\nSymbols to move, in this order: ${c.symbols.join(', ')}\n` +
-      `Snapshot: ${snapshot}\nPackage dir for the gate: ${plan.pkgDir}\nScripts: ${S}\n${RULES}\nReturn the JSON report described in your instructions.`
-
-    // one extractor per cluster, in parallel, each in its own worktree; escalate on failure
-    let results = await parallel(wave.map((c) => () =>
-      agent(brief(c), { label: `extract:${stem}:${c.cluster}`, phase: 'Extract', agentType: 'refactor-python:extractor', isolation: 'worktree', schema: EXTRACT })))
-    results = results.filter(Boolean)
-    const failed = wave.filter((c) => !results.find((r) => r.cluster === c.cluster && r.gate === 'pass'))
-    if (failed.length) {
-      log(`wave ${w + 1}: ${failed.length} cluster(s) failed on Opus 4.8; retrying on Opus 5`)
-      const retry = await parallel(failed.map((c) => () =>
-        agent(brief(c), { label: `extract2:${stem}:${c.cluster}`, phase: 'Extract', agentType: 'refactor-python:extractor', model: 'claude-opus-5', isolation: 'worktree', schema: EXTRACT })))
-      results = results.filter((r) => r.gate === 'pass').concat(retry.filter(Boolean))
-    }
-    const passed = results.filter((r) => r.gate === 'pass')
-    const stillFailed = wave.filter((c) => !passed.find((r) => r.cluster === c.cluster)).map((c) => c.cluster)
-    if (stillFailed.length) log(`wave ${w + 1}: giving up on clusters ${stillFailed.join(', ')} (needs re-plan or human)`)
-
-    // merge in plan order, one at a time; on conflict re-extract on the updated base
-    phase('Merge')
-    for (const c of wave) {
-      let r = passed.find((x) => x.cluster === c.cluster)
-      if (!r) continue
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const m = await agent(
-          `On branch ${pre.branch}, run 'git merge --no-ff ${r.branch}'. If git reports conflicts run 'git merge --abort' and return {gate:"FAIL", cause:"conflict"}. ` +
-          `Otherwise run 'bash ${S}/verify.sh --pkg ${plan.pkgDir} --snapshot ${snapshot}' and return {gate, cause}. Do not fix anything.`,
-          { label: `merge:${stem}:${c.cluster}`, phase: 'Merge', agentType: 'refactor-python:gate-runner', schema: GATE },
-        )
-        if (m && m.gate === 'PASS') break
-        if (m && m.cause === 'conflict' && attempt === 0) {
-          r = await agent(brief(c), { label: `reextract:${stem}:${c.cluster}`, phase: 'Merge', agentType: 'refactor-python:extractor', isolation: 'worktree', schema: EXTRACT })
-          if (!r || r.gate !== 'pass') break
-          continue
+    if (!PARALLEL || pending.length === 1) {
+      // Sequential (default): every cluster rewrites the root's import block, so parallel extraction from one tip
+      // only ever lands its first merge and re-extracts the rest. Each cluster starts from the merged HEAD.
+      for (const c of pending) {
+        const r = await runCluster(c)
+        if (!r) { failed.push(c.cluster); break }
+        phase('Merge')
+        const m = await mergeOne(r, c)
+        if (!m || m.gate !== 'PASS') { failed.push(c.cluster); log(`${stem} wave ${w + 1}: merge of ${c.cluster} failed: ${m && m.cause}`); break }
+        merged.push(c.cluster)
+        phase('Extract')
+      }
+    } else {
+      const results = await parallel(pending.map((c) => () => runCluster(c).then((r) => r && { ...r, cluster: c.cluster })))
+      phase('Merge')
+      for (const c of pending) {
+        let r = results.find((x) => x && x.cluster === c.cluster)
+        if (!r) { failed.push(c.cluster); continue }
+        let ok = false
+        for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+          const m = await mergeOne(r, c)
+          if (m && m.gate === 'PASS') { ok = true; break }
+          if (isConflict(m) && attempt === 0) {
+            // re-extract from the merged HEAD, never resolve by hand
+            r = await extract(c, `reextract:${stem}:${c.cluster}`)
+            if (!r || r.gate !== 'pass' || !r.commit) break
+            continue
+          }
+          log(`${stem} wave ${w + 1}: merge of ${c.cluster} failed: ${m && m.cause}`)
+          break
         }
-        log(`merge of ${c.cluster} failed: ${m && m.cause}`)
-        break
+        if (ok) merged.push(c.cluster); else failed.push(c.cluster)
       }
     }
-    await agent(
-      `On branch ${pre.branch}: add backwards-compatible re-exports to ${src} for every public symbol moved in wave ${w + 1} of ${plan.planPath} ` +
-      `(explicit 'from .x import A as A' form; keep __all__ accurate), run 'bash ${S}/verify.sh --pkg ${plan.pkgDir} --snapshot ${snapshot}', ` +
-      `and commit "refactor(${stem}): re-exports for wave ${w + 1}". Return {gate, cause}.`,
-      { label: `reexport:${stem}:w${w + 1}`, phase: 'Merge', model: 'claude-opus-5', schema: GATE },
+    if (failed.length) {
+      log(`${stem} wave ${w + 1}: stopping; failed clusters: ${failed.join(', ')}; merged: ${merged.join(', ')} (repoint a layout pin, apply the plan's fallback seam, or re-plan; then relaunch with doneWaves/doneClusters)`)
+      waveReports.push({ mod: plan.mod, wave: w, merged, failed })
+      break
+    }
+
+    // Wave close in two agents: the full test run can exhaust one agent's turn budget.
+    phase('Merge')
+    const prep = await agent(
+      `On branch ${pre.branch} at the repository root, prepare the close of wave ${w + 1} of ${plan.planPath} (clusters: ${wave.map((c) => c.cluster).join(', ')}). Do NOT commit.\n` +
+      `1. In ${src} rewrite the re-exports for every symbol moved in this wave to the explicit 'from .<target> import A as A' form; every name in __all__ and every attribute read by importers and tests must still resolve.\n` +
+      `2. __all__ must be VERBATIM the baseline literal: compare it (ast) against 'git show ${pre.baselineCommit}:${plan.mod}'; if rope or an extractor appended names, restore the baseline list.\n` +
+      `3. Require 'git diff ${pre.baselineCommit} --stat -- CHANGELOG.md' to be empty and every commit of this wave to touch only ${pkgPath}/ and import sites; report any other path in cause.\n` +
+      `4. If the repository keeps digest/byte pins on the moved files (a manifest of subject hashes, fixture digests), re-mint them now.\n` +
+      `5. Fast gate: bash ${S}/verify.sh --pkg ${plan.pkgDir} --snapshot ${snapshot} --strict-bodies --fast\n` +
+      `Return {gate, cause}: PASS only if steps 2, 3 and 5 hold. Leave the working tree as it is for the next agent.`,
+      { label: `wave-end-prep:${stem}:w${w + 1}`, phase: 'Merge', model: 'claude-opus-5', schema: GATE },
     )
+    const end = (!prep || prep.gate !== 'PASS') ? prep : await agent(
+      `On branch ${pre.branch} at the repository root (working tree already prepared; do not edit anything). Run the full gate as ONE foreground Bash call with the maximum timeout (never background it, never poll): bash ${S}/verify.sh --pkg ${plan.pkgDir} --snapshot ${snapshot} --strict-bodies\n` +
+      `If it passes: git add -A -- ${pkgPath} && git commit -m "refactor(${stem}): re-exports after wave ${w + 1} (${wave.map((c) => c.dest.replace(/^.*\//, '')).join(', ')})" and return {gate:"PASS", commit:<sha>}. Otherwise return {gate:"FAIL", cause:<the failing checks>} without committing.`,
+      { label: `wave-end-gate:${stem}:w${w + 1}`, phase: 'Merge', agentType: 'refactor-python:gate-runner', schema: GATE },
+    )
+    waveReports.push({ mod: plan.mod, wave: w, merged, failed: [], end })
+    if (!end || end.gate !== 'PASS') { log(`${stem} wave ${w + 1}: wave-end gate failed: ${end && end.cause}`); break }
+    log(`${stem} wave ${w + 1} closed: ${merged.length} cluster(s), commit ${end.commit || ''}`)
   }
 }
+const stopped = waveReports.filter((r) => r.failed.length || !r.end || (r.end !== 'done-before-launch' && r.end.gate !== 'PASS'))
+if (stopped.length) return { branch: pre.branch, status: 'stopped', waveReports }
+
+// ---------------------------------------------------------------- Finalize (BEFORE the review: reviewers otherwise block on what this step changes)
+phase('Finalize')
+const fin = await agent(
+  `On ${pre.branch}: 1. regenerate '.refactor-baseline.json' with 'python3 ${S}/check_file_length.py --write-baseline .refactor-baseline.json --max ${maxLines} .' (every entry pinned to its measured size; the old module entries disappear), ` +
+  `run 'python3 ${S}/check_file_length.py --max ${maxLines} .' and report which of ${JSON.stringify(approved.map((p) => p.pkgDir))} still have files over budget. ` +
+  `2. If import-linter is configured, add a layers contract per new package in wave order (bottom = the first wave's targets) and run 'lint-imports'; any ignore_imports you need is a deviation to report, not to hide. ` +
+  `3. Update documentation that names the old module path, write ONE CHANGELOG entry for the whole split, re-mint any digest/byte pins on the moved files. ` +
+  `4. Strict oracle per module: python3 ${S}/snapshot_bodies.py compare .refactor/before-<stem>.json <pkg dir> --strict. 5. Full gate per module: bash ${S}/verify.sh --pkg <pkg dir> --snapshot .refactor/before-<stem>.json --strict-bodies. ` +
+  `6. Commit as "refactor: finalize split (baseline, import contract, docs)". ` +
+  `Return a Markdown report: per module the new files with code-line counts and symbols moved, gate status of steps 1-5, every deviation, the tip SHA, and the exact gate commands.`,
+  { label: 'finalize', phase: 'Finalize', model: 'claude-opus-5' },
+)
 
 // ------------------------------------------------------------ Codex review
+// The headless review can run 20-30 minutes on a large split, longer than a subagent's turn budget. The orchestrator
+// may run it detached and pass the result as args.codexDone; otherwise the agent gets ONE bounded foreground attempt.
 phase('Codex review')
-const codexReviews = await pipeline(approved, (plan) => agent(
-  `On branch ${pre.branch}, run 'bash ${S}/codex_review.sh --base ${pre.baselineCommit} --plan ${plan.planPath} --out .refactor/codex-review-${plan.mod.replace(/[^A-Za-z0-9]+/g, '_')}.md'. ` +
-  `Do not read the .jsonl log. Return JSON {ok:boolean, path:string, verdict:string, thread:string} from the output file (verdict "unavailable" and ok:false if codex is missing or failed).`,
-  { label: 'codex:' + plan.mod, phase: 'Codex review', model: 'claude-opus-4-8', schema: { type: 'object', required: ['ok', 'path', 'verdict'], properties: { ok: { type: 'boolean' }, path: { type: 'string' }, verdict: { type: 'string' }, thread: { type: 'string' } } } },
-).then((r) => ({ mod: plan.mod, ...(r || { ok: false, path: '', verdict: 'unavailable' }) })))
+const codexReviews = await pipeline(approved, (plan) => CODEX_DONE[plan.mod]
+  ? Promise.resolve({ mod: plan.mod, ...CODEX_DONE[plan.mod] })
+  : agent(
+    `On branch ${pre.branch}, run as ONE foreground Bash call with the maximum timeout (never background it): 'bash ${S}/codex_review.sh --base ${pre.baselineCommit} --plan ${plan.planPath} --out .refactor/codex-review-${plan.mod.replace(/[^A-Za-z0-9]+/g, '_')}.md'. ` +
+    `Do not read the .jsonl log. Return JSON {ok:boolean, path:string, verdict:string, thread:string} from the output file. If the call times out or codex is missing, return ok:false and verdict "unavailable" with the reason; the orchestrator will run it detached and relaunch with args.codexDone.`,
+    { label: 'codex:' + plan.mod, phase: 'Codex review', model: 'claude-opus-4-8', schema: { type: 'object', required: ['ok', 'path', 'verdict'], properties: { ok: { type: 'boolean' }, path: { type: 'string' }, verdict: { type: 'string' }, thread: { type: 'string' } } } },
+  ).then((r) => ({ mod: plan.mod, ...(r || { ok: false, path: '', verdict: 'unavailable' }) })))
 
-// ------------------------------------------------------------------ Review
+// ------------------------------------------------------------------ Review (of the finalized tree)
 phase('Review')
 const reviews = await pipeline(approved, (plan) => agent(
-  `Review the split of ${plan.mod}: baseline commit ${pre.baselineCommit}, HEAD of ${pre.branch}, plan ${plan.planPath}, snapshot .refactor/before-*.json, scripts ${S}, codex review at ${(codexReviews.find((c) => c.mod === plan.mod) || {}).path || 'unavailable'}. Do your own check first, then adjudicate every Codex finding as CONFIRMED/REFUTED/UNVERIFIABLE. Return JSON {verdict, blocking[], disputed[]}.`,
+  `Review the FINALIZED split of ${plan.mod}: baseline commit ${pre.baselineCommit}, HEAD of ${pre.branch}, plan ${plan.planPath}, snapshot .refactor/before-*.json, scripts ${S}, codex review at ${(codexReviews.find((c) => c.mod === plan.mod) || {}).path || 'unavailable'}. ` +
+  `Do your own check first (oracle compare over the snapshot's scope, __all__ verbatim, no CHANGELOG/test edits beyond layout pins, no direct patch.object sites on package aliases in tests), then adjudicate every Codex finding as CONFIRMED/REFUTED/UNVERIFIABLE with evidence. Return JSON {verdict, blocking[], disputed[]}.`,
   { label: 'review:' + plan.mod, phase: 'Review', agentType: 'refactor-python:refactor-reviewer', schema: VERDICT },
 ).then((v) => ({ mod: plan.mod, ...(v || { verdict: 'REJECT', blocking: ['reviewer returned nothing'] }) })))
 
@@ -179,13 +258,4 @@ for (const r of reviews) {
   }
 }
 
-// ---------------------------------------------------------------- Finalize
-phase('Finalize')
-const fin = await agent(
-  `On ${pre.branch}: regenerate '.refactor-baseline.json' with 'python3 ${S}/check_file_length.py --write-baseline .refactor-baseline.json --max ${maxLines} .', ` +
-  `run 'python3 ${S}/check_file_length.py --max ${maxLines} .' and report which of ${JSON.stringify(approved.map((p) => p.pkgDir))} still have files over budget. ` +
-  `Then produce a Markdown report: per module the new files with code-line counts, symbols moved, gate status, Codex verdicts ${JSON.stringify(codexReviews.map((c) => ({ mod: c.mod, verdict: c.verdict })))}, Fable verdicts ${JSON.stringify(reviews)}, consensus record ${JSON.stringify(consensus)} (write it to .refactor/consensus.md; unresolved DISAGREE items must be listed for the user), and the exact gate command. Commit the baseline. Return the report as text.`,
-  { label: 'finalize', phase: 'Finalize', model: 'claude-opus-5' },
-)
-
-return { branch: pre.branch, codexReviews, reviews, consensus, report: fin }
+return { branch: pre.branch, status: 'done', waveReports, report: fin, codexReviews, reviews, consensus }

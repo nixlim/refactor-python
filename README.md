@@ -5,9 +5,12 @@ codebases, and for keeping them small afterwards.
 
 **What it enforces:** relocations happen only through rope (deterministic, project-wide
 import rewriting); every step must pass a gate (compile, ruff, types, import contracts,
-AST body-hash oracle, tests) before it is committed; extraction fans out to parallel
-subagents in git worktrees and fans back in one merge at a time; a headless Codex (GPT-5.6 Sol, ultra) review followed by a Fable 5.1 review that adjudicates
-both the diff and Codex's findings, with a consensus round on disagreements the result; a hook and CI stop files from regrowing.
+AST body-hash oracle, tests) before it is committed; extraction runs one cluster
+at a time per module in git worktrees (every cluster rewrites the package root, so parallel
+extraction of one module only conflicts) and merges each by commit SHA; finalize lands the
+baseline, docs and import contract first, then a headless Codex (GPT-5.6 Sol, ultra) review
+followed by a Fable 5.1 review adjudicate the finished tree, with a consensus round on
+disagreements; a hook and CI stop files from regrowing.
 
 ## Install
 
@@ -76,7 +79,7 @@ repeated gate failure. Rationale and overrides: `skills/split-module/references/
 
 ## Second-opinion review (Codex)
 
-Phase 6a runs `scripts/codex_review.sh`, which follows the operational playbook of the
+Phase 7a runs `scripts/codex_review.sh` (detached from the orchestrator's shell on large splits; it outlives a subagent's turn budget), which follows the operational playbook of the
 [codex-orchestrator](https://github.com/alexzh3/codex-orchestrator) plugin (install it too;
 its skill is the reference for locating the binary, run modes, and resume/consensus).
 Requires Codex CLI or the IDE extension, signed in. `ultra` needs the ChatGPT backend; on
