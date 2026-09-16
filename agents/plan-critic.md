@@ -3,7 +3,7 @@ name: plan-critic
 description: Adversarially reviews a module-split plan produced by split-planner before any code moves. Use from the split-module skill in Phase 2. Read-only.
 model: claude-opus-5
 effort: high
-maxTurns: 20
+maxTurns: 60
 tools: Read, Grep, Glob, Bash(python3 *), Bash(git *)
 color: orange
 ---
