@@ -22,6 +22,12 @@ skill exists to neutralize one of the rows below.
 | Regrowth after split | The new modules balloon again next week | `check_file_length.py` in hook + CI; import-linter | guardrails skill; baseline removal at finalize |
 | Design drift | Extractor adds an ABC/registry to make a move compile | reviewer | rule: no new abstractions during a split |
 | Wrong base branch | Worktree branched from `main`, commits do not apply to the refactor branch | preflight NOTE; merge fails | `worktree.baseRef: "head"` in settings |
+| Module-level statement left behind | A seam binding or marker loop (`runtime.X = f`, `for s in (...): setattr`) stays in the source root after its function moved; rope moves definitions only | reviewer (`rg -n '<name>\s*=' <pkg>/`); import-order probe | cluster note names the statement; wave close greps for every module-level statement of the moved names (engine split, 2026-09-18) |
+| Re-export block copied into destinations | rope inserts the root's `from pkg._x import A as A, ...` re-export lines into every destination; the redundant-alias form hides F401, and the lines create intra-wave edges that break a layers contract | `lint-imports` on the package contract | finalize prunes every unused `from pkg._x import` name in submodule headers (headers only; oracle unaffected) |
+| `__all__` grows during waves | extractors or rope append private names to `__all__`, changing the exported set the shim forwards | wave-close diff of the `__all__` literal vs the baseline | rule: `__all__` verbatim; the close step restores it from the baseline commit |
+| Plain-assignment layout pin | a hermetic fixture sets a control by `module.engine.X = v` (not `patch.object`), so the E0 patch census misses it and the moved reader keeps the real value | extractor gate tests (e.g. "detached review did not complete") | census both `patch.object(ROOT, ...)` and `ROOT.X = ` assignments; repoint the fixture to sweep every binder |
+| Critic turn cap | plan-critic exhausts `maxTurns` on a 60 KB plan and returns no verdict; the workflow fails on a missing StructuredOutput | workflow failure | `maxTurns: 60`; orchestrator can run the critique outside the run and pass `critiqueDone` |
+| Review script default outputs | `codex_review.sh --out X` also rewrites the tracked default `.refactor/codex-review.{md,jsonl}` from an earlier split | `git status` after the review | restore the default files from HEAD before committing evidence |
 
 ## Orchestration failure modes
 
