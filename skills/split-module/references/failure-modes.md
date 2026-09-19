@@ -55,6 +55,31 @@ code, because the oracle and the gate still hold; all of them lose hours.
 
 ## Escalation is part of the design
 
+## Decomposition refusals and checks
+
+| Failure | Check and response |
+|---|---|
+| `super()` / `__class__` / private mangling changes owner semantics | Method inventory refuses; keep method on the class or plan a separately tested design change. |
+| Unknown/stacked decorator, setter overload, class-dependent default/annotation | Refuse instead of guessing descriptor or class-scope behavior. |
+| Metaclass, decorated class, slots | Refuse mechanical class move; review object-model effects first. |
+| Moved method resolves global state through a source cycle | Require independent import owner before moving; dynamic namespace access/global writes refuse. |
+| Destination clash, stale source, duplicate definition or existing manifest | Refuse before writing; regenerate the plan from the current snapshot. |
+| Container hash waived to allow a move | Manifest oracle reconstructs whole class, bindings and bases; class-wide allow-lists are prohibited. |
+| Source changed after a verified cluster | Compare each manifest at its recorded output commit in a worktree and check final sources against reviewed outputs. |
+| Partial statements, return/yield/await or nonlocal/global extraction | Rope and the independent structural check refuse; choose a complete range. |
+| Escaping, recursive, complex-signature or nonlocal nested closure | Hoist refuses; use a separately reviewed design change. |
+| Excessive extracted parameters | Quality limit refuses; select a more cohesive range. |
+| Support file/mixin accidentally collected | Reject discovery-pattern names; compare exact unittest/pytest IDs. |
+| Test preamble defines a used constant/helper | Inventory lists the prerequisite; refusal names method and line. First relocate globals into non-discovered support, then recollect and re-freeze. |
+| Namespace tests fail unittest importability checks | Collector auto preset uses the tests directory as top level; preserve that resolved setting and bare-module ID spelling throughout. |
+| Inherited lint findings appear at the new path | Finalize reviews destination per-file ignores; no unmanifested body edits or blanket suppression of new defects. |
+| Bad quality JSON breaks an edit hook | The standalone size hook reads only its flag/env setting, never decomposition configuration. Validate JSON separately in planning. |
+| ID count preserved but a test changes shard or identity | Compare exact IDs and per-shard memberships, not counts alone. |
+| Only giant functions moved into smaller modules | Quality report still flags function/class targets; record debt and continue the plan. |
+
+The legacy split-module failure modes above still apply. For decompose, whole-file
+manifest checking also rejects undeclared import fixes after extraction.
+
 A failed gate is information, not an emergency. The ladder in SKILL.md (resume → stronger
 model → re-plan smaller → stop) bounds the cost of any one cluster and keeps the main
 context free of debugging noise: the extractor debugs in its own context; the

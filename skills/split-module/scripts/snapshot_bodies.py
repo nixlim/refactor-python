@@ -107,17 +107,57 @@ def main() -> int:
     c.add_argument("paths", nargs="+")
     c.add_argument("--strict", action="store_true", help="fail on CHANGED too (default: fail only on MISSING/ADDED)")
     c.add_argument("--allow-changed", default="", help="comma-separated qualnames allowed to change")
+    c.add_argument("--manifest", help="decompose manifest; verify complete declared structural transformation")
+    c.add_argument("--tier3", action="store_true", help="reviewed design change; enables method-only allow-list")
+    c.add_argument("--base", help="committed baseline for explicit --tier3 verification")
     args = ap.parse_args()
 
     if args.cmd == "snapshot":
         hashes, where = collect(args.paths)
         with open(args.out, "w", encoding="utf-8") as f:
-            json.dump({"hashes": hashes, "where": where}, f, indent=1, sort_keys=True)
+            files = {}
+            for p in iter_py_files(args.paths):
+                with open(p, encoding="utf-8") as source:
+                    files[os.path.normpath(os.path.relpath(p))] = hashlib.sha256(source.read().encode()).hexdigest()
+            json.dump({"hashes": hashes, "where": where, "files": files,
+                       "paths": [os.path.normpath(os.path.relpath(p)) for p in args.paths]}, f, indent=1, sort_keys=True)
         print(f"snapshot: {sum(len(v) for v in hashes.values())} bodies across {len(where)} names -> {args.out}")
         return 0
 
     with open(args.before, encoding="utf-8") as f:
-        before = json.load(f)["hashes"]
+        snapshot = json.load(f)
+        before = snapshot["hashes"]
+    if args.manifest or args.tier3:
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'decompose' / 'scripts'))
+        from common import Refusal, git_sources
+        from manifest_oracle import verify, verify_scope, verify_allowed_methods
+        try:
+            current = {os.path.normpath(os.path.relpath(p)): Path(p).read_text() for p in iter_py_files(args.paths)}
+            if args.manifest:
+                if args.allow_changed or args.tier3:
+                    raise Refusal('manifest operations cannot waive body changes')
+                manifest = json.loads(Path(args.manifest).read_text())
+                touched = set(manifest['baseline'])
+                verify_scope(snapshot, current, touched)
+                if any(snapshot['files'].get(p, hashlib.sha256(b'').hexdigest()) != manifest['baseline'][p] for p in touched):
+                    raise Refusal('manifest baseline differs from snapshot')
+                originals = git_sources('.', touched, manifest['base_commit'])
+                verify(originals, {p: current[p] for p in touched}, manifest)
+                print(f'manifest oracle: PASS (tier {manifest["tier"]})')
+            else:
+                if not args.base:
+                    raise Refusal('--tier3 requires --base <committed baseline>')
+                verify_scope(snapshot, current, set(current))
+                originals = git_sources('.', current, args.base)
+                if any(hashlib.sha256(s.encode()).hexdigest() != snapshot['files'].get(p) for p, s in originals.items()):
+                    raise Refusal('tier 3 baseline differs from snapshot')
+                verify_allowed_methods(originals, current, args.allow_changed.split(','))
+                print('tier 3 method allow-list: PASS; tests and review still required')
+            return 0
+        except (Refusal, ValueError, KeyError, SyntaxError) as exc:
+            print(f'decompose oracle: FAIL: {exc}', file=sys.stderr)
+            return 1
     after, where = collect(args.paths)
     allow = {x.strip() for x in args.allow_changed.split(",") if x.strip()}
 

@@ -2,9 +2,17 @@
 # Preflight for refactor-python. Verifies the toolchain and repo state.
 #   preflight.sh            -> report only (exit 1 if a REQUIRED tool is missing)
 #   preflight.sh --install  -> try to install missing Python tools into the active env
+#   preflight.sh --decompose -> also require LibCST for class/function decomposition
 set -u
 INSTALL=0
-[ "${1:-}" = "--install" ] && INSTALL=1
+DECOMPOSE=0
+for arg in "$@"; do
+  case "$arg" in
+    --install) INSTALL=1 ;;
+    --decompose) DECOMPOSE=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 ok=(); missing=(); optional_missing=()
 PY=${PYTHON:-python3}
@@ -31,6 +39,7 @@ echo "== toolchain =="
 check git cmd 1 ""
 check "$PY" cmd 1 ""
 check rope mod 1 rope                 # deterministic move engine
+[ "$DECOMPOSE" -eq 0 ] || check libcst mod 1 libcst  # opt-in; whole-module moves do not need it
 check ruff cmd 1 ruff                 # lint / import fix / complexity rules
 check pytest cmd 1 pytest             # test gate
 # one type checker is enough: prefer whichever is already present

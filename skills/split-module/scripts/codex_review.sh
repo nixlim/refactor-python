@@ -55,6 +55,13 @@ Look specifically for:
    registries, 'common' packages) introduced to make a move compile.
 5. Public API breaks: symbols previously importable from the original path that no longer are.
 6. Anything in the diff that is not a move, an import change, a re-export, or a type-only import.
+For a decompose plan, apply its explicit tier contract: verified class-body bindings and
+test-only mixin bases are permitted in tier 1; exact declared extracts/closure rewrites
+are permitted in tier 2. Inspect manifests and replay per-cluster evidence, test IDs,
+shard membership, global owners, descriptors and census findings. Structural equality
+does not by itself prove behavior. Tier 3 requires tests, review and operator approval;
+never accept a class-wide waiver or undeclared production base class. Reject any
+unmanifested change, mixed-tier commit or untracked quality debt.
 $( [ -n "$PLANTXT" ] && printf 'The split plan the agents followed is below; flag deviations from it.\n---PLAN---\n%s\n---END PLAN---\n' "$PLANTXT" )
 Output EXACTLY this format and nothing after it:
 VERDICT: APPROVE | REJECT

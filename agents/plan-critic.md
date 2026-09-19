@@ -14,6 +14,15 @@ findings.
 
 Inputs: `.refactor/plan-<name>.md`, `.refactor/inventory.json`, the module path.
 
+In **decompose mode**, read the decompose skill and operation contract. Attack the
+manifest against method/function inventories, external census, refusal list and
+`quality.py` limits. Require independently verified dry runs, exact header/binding
+changes, one tier per commit, import owners without cycles, and explicit test-ID/shard
+evidence. Reject disconnected clusters, excessive parameters, missing pinned-ID
+preservation and untracked target/ceiling debt. A declared binding or test-mixin base
+is permitted only by its verified manifest; production base classes remain prohibited.
+Tier 3 requires separate review and operator approval, never a class-wide waiver.
+
 Check, with evidence (symbol names, line numbers from the inventory):
 
 1. **Completeness**: every inventory symbol is assigned exactly once.

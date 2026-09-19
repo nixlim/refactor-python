@@ -10,6 +10,15 @@ color: cyan
 
 Run exactly the command you are given (a `verify.sh` invocation) from the repo root.
 
+For **decompose mode**, preserve `--manifest`, `--snapshot`, `--test-snapshot` and
+`--test-mode` from the brief. Missing manifest/test evidence is a failure, not a skipped
+check. At finalize verify each manifest at its recorded output commit in a worktree,
+check final sources against the reviewed outputs, and run `quality.py` on all resulting
+modules. Pass the configured ceiling via `REFACTOR_MAX_LINES`. Inspect class header changes against manifests. `--mint` invokes
+the project-owned `REFACTOR_MINT_CMD` only at wave close/finalize; propagate hook failure.
+If a workflow brief explicitly requests preflight/finalization evidence or commits,
+perform those scoped operations; never fix source code while running the gate.
+
 When the brief also asks you to merge first, merge **the commit SHA named in the brief**
 (never a branch name), on the named branch, with a clean tree:
 `git merge-base --is-ancestor <sha> HEAD` means already merged (skip to the gate);

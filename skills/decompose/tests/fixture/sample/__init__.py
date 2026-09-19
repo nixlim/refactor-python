@@ -1,0 +1,1 @@
+"""Small public example package."""

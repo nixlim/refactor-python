@@ -16,6 +16,15 @@ Inputs: baseline commit, HEAD, `.refactor/plan-<name>.md`, `.refactor/before.jso
 scripts dir `$S`.
 
 ## Method
+For **decompose mode**, use the decompose skill and operation contract. Run
+each manifest comparison at its recorded output commit in a worktree, check final
+sources against the reviewed outputs, compare test IDs and shard memberships,
+and inspect class headers and binding expressions against the manifest. Check census
+findings, global ownership, descriptor semantics and reflection callers; AST equality
+is not a general behavior proof. Reject class-wide waivers, mixed-tier commits,
+unapproved tier-3 changes and debt without reasons/follow-ups. Apply the independent
+Codex adjudication below to this evidence instead of package-root re-export rules.
+
 1. `git diff --stat <baseline>..HEAD` to scope. `git diff <baseline>..HEAD -- <pkg>/__init__.py`
    to see what stayed and what the re-exports look like.
 2. `python3 $S/snapshot_bodies.py compare .refactor/before.json <pkg_dir>` — every

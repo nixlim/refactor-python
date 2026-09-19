@@ -14,6 +14,15 @@ allowed-tools: Bash(python3 *), Bash(bash *), Bash(git *), Bash(ruff *), Bash(py
 
 # Split a Python god-module
 
+For splitting methods within a class, extracting ranges within a function, or
+preserving/mapping test-class IDs, use the sibling `decompose` skill. This skill
+remains the tier-1 whole-module relocation case. Shared quality settings live in
+`.refactor-quality.json` as documented by `decompose`: plan to `module_target`,
+enforce `module_ceiling` via `--max` or `REFACTOR_MAX_LINES`, and report every
+over-target module as tracked debt. The standalone edit hook does not read this JSON.
+Digest regeneration is a project hook: set `REFACTOR_MINT_CMD` and invoke
+`verify.sh --mint` at wave close/finalize before digest tests.
+
 You are the **orchestrator**. You plan, delegate, gate, and merge. You do **not**
 cut-and-paste code by hand: every relocation goes through `rope_move.py`, and every
 step must pass `verify.sh` before it is committed. The reason is empirical: freehand

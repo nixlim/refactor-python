@@ -117,6 +117,58 @@ def external_dependents(repo_root: str, module_name: str, this_file: str):
     return sorted(hits, key=lambda x: -x[1])
 
 
+def peel_hubs(nodes, edges, exclude_hubs=None, max_hubs=12):
+    """Shared hub peeling for module and class inventories; input order breaks ties."""
+    fan_in = defaultdict(int)
+    for a, b in edges:
+        fan_in[b] += 1
+    positions = {n: i for i, n in enumerate(nodes)}
+    order = sorted(nodes, key=lambda n: (-fan_in[n], positions[n]))
+    counts = [exclude_hubs] if exclude_hubs is not None else range(max_hubs + 1)
+    for k in counts:
+        hubs = order[:k]
+        core = [n for n in nodes if n not in hubs]
+        components = connected_components(core, [(a, b) for a, b in edges if a in core and b in core])
+        if not components or max(map(len, components)) < .4 * max(1, len(core)):
+            break
+    return order, hubs, core, components
+
+
+def label_propagation(nodes, edges, rounds=20, seeds=None):
+    """Deterministic shared communities; optional seeded members keep their label."""
+    adj = defaultdict(set)
+    for a, b in edges:
+        adj[a].add(b); adj[b].add(a)
+    label = {n: i for i, n in enumerate(nodes)}
+    pinned = set()
+    for members in (seeds or {}).values():
+        present = [n for n in members if n in label]
+        if present:
+            value = min(label[n] for n in present)
+            for n in present:
+                label[n] = value
+                pinned.add(n)
+    for _ in range(rounds):
+        changed = False
+        for n in nodes:
+            if not adj[n] or n in pinned:
+                continue
+            counts = defaultdict(int)
+            for m in adj[n]:
+                counts[label[m]] += 1
+            best = min(counts, key=lambda key: (-counts[key], key))
+            if counts[best] > counts.get(label[n], 0) or (counts[best] == counts.get(label[n], 0) and best < label[n]):
+                if label[n] != best:
+                    label[n] = best
+                    changed = True
+        if not changed:
+            break
+    groups = defaultdict(list)
+    for n in nodes:
+        groups[label[n]].append(n)
+    return list(groups.values())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("module")
@@ -174,48 +226,13 @@ def main() -> int:
     fan_in = defaultdict(int)
     for a, b in def_edges:
         fan_in[b] += 1
-    hub_order = sorted(def_nodes, key=lambda n: (-fan_in[n], symbols[n]["line"]))
-    hubs = []
-    if args.exclude_hubs is not None:
-        hubs = hub_order[: args.exclude_hubs]
-        core_nodes = [n for n in def_nodes if n not in hubs]
-        comps = connected_components(core_nodes, [(a, b) for a, b in def_edges if a in core_nodes and b in core_nodes])
-    else:  # auto: peel hubs until the largest component is < 40% of defs (or max-hubs reached)
-        for k in range(0, args.max_hubs + 1):
-            hubs = hub_order[:k]
-            core_nodes = [n for n in def_nodes if n not in hubs]
-            comps = connected_components(core_nodes, [(a, b) for a, b in def_edges if a in core_nodes and b in core_nodes])
-            if not comps or max(len(c) for c in comps) < 0.4 * max(1, len(core_nodes)):
-                break
+    hub_order, hubs, core_nodes, comps = peel_hubs(def_nodes, def_edges, args.exclude_hubs, args.max_hubs)
     comps.sort(key=lambda c: -sum(symbols[n]["loc"] for n in c))
 
     # --- label propagation communities on the hub-free graph (finer than components when one
     # component remains large). Deterministic: fixed iteration order, ties broken by smallest label.
-    def label_propagation(nodes, e_list, rounds=20):
-        adj = defaultdict(set)
-        for a, b in e_list:
-            adj[a].add(b); adj[b].add(a)
-        label = {n: i for i, n in enumerate(nodes)}
-        for _ in range(rounds):
-            changed = False
-            for n in nodes:
-                if not adj[n]:
-                    continue
-                counts = defaultdict(int)
-                for m in adj[n]:
-                    counts[label[m]] += 1
-                best = min(counts, key=lambda l: (-counts[l], l))
-                if counts[best] > counts.get(label[n], 0) or (counts[best] == counts.get(label[n], 0) and best < label[n]):
-                    if label[n] != best:
-                        label[n] = best; changed = True
-            if not changed:
-                break
-        groups = defaultdict(list)
-        for n in nodes:
-            groups[label[n]].append(n)
-        return sorted(groups.values(), key=lambda g: -sum(symbols[x]["loc"] for x in g))
-    core_nodes = [n for n in def_nodes if n not in hubs]
     communities = label_propagation(core_nodes, [(a, b) for a, b in def_edges if a in core_nodes and b in core_nodes])
+    communities.sort(key=lambda g: -sum(symbols[x]["loc"] for x in g))
 
     globals_used = []
     for name in order:

@@ -18,6 +18,22 @@ report `gate: fail` with `notes: "incomplete brief"`.
 
 ## Procedure
 
+For a **decompose brief**, read `skills/decompose/references/operations.md`. This
+variant supersedes the rope-only and whole-class prohibition below solely for the
+manifest's declared changes. Use `move_methods.py` for tier 1 and `extract_ranges.py`
+for tier 2; dry-run first, then `--apply`. Freeze a fresh digest snapshot of committed sources
+per cluster; preserve the manifest with it. Never implement a refused move by hand.
+Import formatting defaults to off: when the project gate enforces isort/import
+ordering (including Ruff's `I` rules), pass `--format-imports` to the selected tool
+in both dry-run and apply commands so sorting is covered by the manifest before
+the per-cluster gate. Do not defer it to finalize.
+Run `verify.sh --snapshot ... --manifest ... --strict-bodies`, plus the supplied
+`--test-snapshot` and `--test-mode`. A class header/binding changes only as declared.
+Mixins are for tests only; no new production base class. Keep tiers in separate
+commits. Do not run import auto-fixes after manifest validation: those changes need
+their own declared proof. Return snapshot and manifest paths with the commit SHA.
+On failure preserve evidence and return it; do not discard unrelated work.
+
 ```bash
 S=<scripts dir from the brief>
 git rev-parse --abbrev-ref HEAD            # note your branch name for the report
