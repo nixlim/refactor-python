@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "refactor-python",
   "displayName": "Refactor Python (verified code decomposition)",
-  "version": "1.1.0",
+  "version": "0.1.1",
   "description": "Verified decomposition of Python modules, classes, functions and tests using rope, LibCST, manifest oracles, test-ID gates and quality guardrails.",
   "keywords": ["refactoring", "python", "rope", "libcst", "worktree", "subagents", "guardrails"],
   "license": "MIT"

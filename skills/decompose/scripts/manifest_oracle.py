@@ -147,11 +147,34 @@ def move(trees, op):
         raise Refusal('unknown move shape')
 
 
+def statement_lists(fn):
+    """Every statement list inside the function (body, else, except, finally), outermost first."""
+    pending = [fn.body]
+    while pending:
+        block = pending.pop(0)
+        yield block
+        for stmt in block:
+            for field in ('body', 'orelse', 'finalbody'):
+                inner = getattr(stmt, field, None)
+                if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
+                    pending.append(inner)
+            for handler in getattr(stmt, 'handlers', []):
+                pending.append(handler.body)
+            for case in getattr(stmt, 'cases', []):
+                pending.append(case.body)
+
+
 def selection(fn, start, end):
-    chosen = [s for s in fn.body if s.lineno >= start and s.end_lineno <= end]
-    if not chosen or chosen[0].lineno != start or chosen[-1].end_lineno != end:
-        raise Refusal('range must span complete direct statements in the selected function')
-    return chosen
+    """The complete, consecutive statements of one statement list that span exactly start..end.
+
+    The list may be nested inside a compound statement of the function; a range that
+    cuts through a statement or straddles two lists is refused.
+    """
+    for block in statement_lists(fn):
+        chosen = [s for s in block if s.lineno >= start and s.end_lineno <= end]
+        if chosen and chosen[0].lineno == start and chosen[-1].end_lineno == end:
+            return block, chosen
+    raise Refusal('range must span complete consecutive statements of one block in the selected function')
 
 
 def result_value(names, context=ast.Load):
@@ -163,10 +186,15 @@ def result_value(names, context=ast.Load):
 def extract(trees, op):
     src, dst = trees[op['source']], trees[op['dest']]
     fn = definition(src, op['function'])
-    chosen = selection(fn, op['start_line'], op['end_line'])
+    block, chosen = selection(fn, op['start_line'], op['end_line'])
     if any(isinstance(n, (ast.Return, ast.Yield, ast.YieldFrom, ast.Await, ast.Nonlocal, ast.Global))
            for stmt in chosen for n in ast.walk(stmt)):
         raise Refusal('return/yield/await/nonlocal/global in extracted range')
+    loops = [n for stmt in chosen for n in ast.walk(stmt) if isinstance(n, (ast.For, ast.AsyncFor, ast.While))]
+    for stmt in chosen:
+        for n in ast.walk(stmt):
+            if isinstance(n, (ast.Break, ast.Continue)) and not any(any(x is n for x in ast.walk(l)) for l in loops):
+                raise Refusal('break/continue in extracted range leaves the range')
     params, outputs = op['parameters'], op['outputs']
     if len(set(params)) != len(params) or len(set(outputs)) != len(outputs):
         raise Refusal('duplicate extraction parameters/outputs')
@@ -177,8 +205,8 @@ def extract(trees, op):
     call = ast.Call(func=ast.Name(id=op['name'], ctx=ast.Load()),
                     args=[ast.Name(id=p, ctx=ast.Load()) for p in params], keywords=[])
     replacement = ast.Assign(targets=[result_value(outputs, ast.Store)], value=call) if outputs else ast.Expr(value=call)
-    index = fn.body.index(chosen[0])
-    fn.body[index:index + len(chosen)] = [replacement]
+    index = block.index(chosen[0])
+    block[index:index + len(chosen)] = [replacement]
     dst.body.append(new)
 
 

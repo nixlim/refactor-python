@@ -15,7 +15,7 @@ from inventory import label_propagation, peel_hubs, top_level_symbols
 KNOWN_DECORATORS = {'staticmethod', 'classmethod', 'property', 'contextmanager', 'contextlib.contextmanager'}
 
 
-def method_facts(source, cls, method):
+def method_facts(source, cls, method, plain_decorators=()):
     decorators = [ast.unparse(d) for d in method.decorator_list]
     nodes = list(ast.walk(method))
     attrs = [n for n in nodes if isinstance(n, ast.Attribute) and
@@ -28,7 +28,7 @@ def method_facts(source, cls, method):
                      {n.id for n in nodes if isinstance(n, ast.Name) and
                       n.id.startswith('__') and not n.id.endswith('__')})
     reasons = []
-    if any(d not in KNOWN_DECORATORS for d in decorators):
+    if any(d not in KNOWN_DECORATORS and d not in plain_decorators for d in decorators):
         reasons.append('unknown decorator')
     if len(decorators) > 1:
         reasons.append('stacked decorators require explicit descriptor analysis')
@@ -155,11 +155,11 @@ def census(root, class_name):
     return hits
 
 
-def inventory(source, class_name, root=None, seeds=None, exclude_hubs=None, max_hubs=12):
+def inventory(source, class_name, root=None, seeds=None, exclude_hubs=None, max_hubs=12, plain_decorators=()):
     cls = definition(ast.parse(source), class_name)
     if not isinstance(cls, ast.ClassDef):
         raise Refusal('target is not a class')
-    methods = [method_facts(source, cls, m) for m in cls.body if isinstance(m, FUNCTIONS)]
+    methods = [method_facts(source, cls, m, plain_decorators) for m in cls.body if isinstance(m, FUNCTIONS)]
     if len({m['name'] for m in methods}) != len(methods):
         raise Refusal('duplicate method definitions (including property setters/overloads)')
     edges, clusters, hubs = communities(methods, seeds, exclude_hubs, max_hubs)
@@ -188,8 +188,10 @@ def main():
     p.add_argument('--max-hubs', type=int, default=12)
     p.add_argument('--json', dest='output')
     a = p.parse_args()
+    from quality import config
+    plain = config(a.repo_root)['plain_decorators']
     result = inventory(Path(a.source).read_text(), a.class_name, a.repo_root,
-                       json.loads(Path(a.seeds).read_text()) if a.seeds else None, a.exclude_hubs, a.max_hubs)
+                       json.loads(Path(a.seeds).read_text()) if a.seeds else None, a.exclude_hubs, a.max_hubs, plain)
     text = json.dumps(result, indent=2)
     if a.output:
         Path(a.output).write_text(text + '\n')

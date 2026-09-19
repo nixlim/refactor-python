@@ -29,6 +29,15 @@ from rope.base.project import Project
 from rope.refactor.extract import ExtractMethod
 
 
+def _inside_loop(node, chosen):
+    """True when a break/continue in the range has its enclosing loop inside the range too."""
+    for stmt in chosen:
+        for loop in ast.walk(stmt):
+            if isinstance(loop, (ast.For, ast.While, ast.AsyncFor)) and any(n is node for n in ast.walk(loop)):
+                return True
+    return False
+
+
 def locate_cst(module, qualname):
     node = module
     for name in qualname.split('.'):
@@ -91,9 +100,10 @@ def plan(root, source, function, name, start=None, end=None, dest=None, nested=N
         expected(before, preliminary)
         modified, extracted = hoist_cst(before[source], function, nested, name, free)
     else:
-        chosen = selection(fn, start, end)
+        _block, chosen = selection(fn, start, end)
         if any(isinstance(n, (ast.Return, ast.Yield, ast.YieldFrom, ast.Await, ast.Nonlocal, ast.Global,
-                              ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for s in chosen for n in ast.walk(s)):
+                              ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for s in chosen for n in ast.walk(s)) \
+                or any(isinstance(n, (ast.Break, ast.Continue)) and not _inside_loop(n, chosen) for s in chosen for n in ast.walk(s)):
             raise Refusal('range contains return/yield/await/global/nonlocal or nested definition; use --nested for closures')
         lines = before[source].splitlines(keepends=True)
         start_offset = sum(map(len, lines[:start - 1]))

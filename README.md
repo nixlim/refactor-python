@@ -78,7 +78,7 @@ Quality is configured in `.refactor-quality.json`:
 
 ```json
 {"module_target": 500, "module_ceiling": 500, "function_target": 150,
- "class_target": 30, "max_parameters": 6}
+ "class_target": 30, "max_parameters": 6, "plain_decorators": []}
 ```
 
 The planner aims at the target; pass the ceiling to the standalone guard with

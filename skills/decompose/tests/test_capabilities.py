@@ -152,8 +152,8 @@ def test_extract_refusals(project):
     fn = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'summarize')
     with pytest.raises(Refusal, match='return'):
         extract_plan(project, 'sample/engine.py', 'summarize', 'bad_return', fn.body[-2].lineno, fn.body[-1].end_lineno)
-    with pytest.raises(Refusal, match='complete direct'):
-        extract_plan(project, 'sample/engine.py', 'summarize', 'partial', fn.body[1].lineno + 1, fn.body[1].end_lineno)
+    with pytest.raises(Refusal, match='complete consecutive'):  # straddles the loop body and the statement after it
+        extract_plan(project, 'sample/engine.py', 'summarize', 'partial', fn.body[1].lineno + 1, fn.body[2].end_lineno)
     with pytest.raises(Refusal, match='parameters'):
         extract_plan(project, 'sample/engine.py', 'summarize', 'too_many', fn.body[0].lineno, fn.body[1].end_lineno, max_parameters=1)
     with pytest.raises(Refusal, match='nonlocal'):

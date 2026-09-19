@@ -202,3 +202,89 @@ def test_plain_bindings_pruning_and_opt_in_facade_retention(project):
     before, after, manifest = plan(project, 'sample/engine.py', 'sample/_recovery.py', 'Engine', ['calculate'], retain_module_api=True)
     assert 'from math import sqrt' in after['sample/engine.py'] and 'noqa: F401' in after['sample/engine.py']
     verify(before, after, manifest)
+
+
+def test_project_declared_plain_decorator_is_wrapped_not_refused(tmp_path):
+    import json, sys
+    sys.path.insert(0, str(SCRIPTS))
+    from class_inventory import inventory
+    from quality import config
+    source = (
+        "import functools\n"
+        "def serialize(fn):\n"
+        "    @functools.wraps(fn)\n"
+        "    def wrapped(self, *a, **k):\n"
+        "        return fn(self, *a, **k)\n"
+        "    return wrapped\n"
+        "class Engine:\n"
+        "    @serialize\n"
+        "    def run(self):\n"
+        "        return 1\n"
+    )
+    facts = {m['name']: m for m in inventory(source, 'Engine')['methods']}
+    assert facts['run']['verdict'] == 'unsupported'
+    (tmp_path / '.refactor-quality.json').write_text(json.dumps({'plain_decorators': ['serialize']}))
+    declared = config(tmp_path)['plain_decorators']
+    facts = {m['name']: m for m in inventory(source, 'Engine', plain_decorators=declared)['methods']}
+    assert facts['run']['verdict'] == 'wrap'
+    (tmp_path / '.refactor-quality.json').write_text(json.dumps({'plain_decorators': 'serialize'}))
+    try:
+        config(tmp_path)
+    except ValueError as exc:
+        assert 'plain_decorators' in str(exc)
+    else:
+        raise AssertionError('string instead of list accepted')
+
+
+def _nested_project(tmp_path):
+    from conftest import commit_all
+    root = tmp_path / 'nested'
+    (root / 'pkg').mkdir(parents=True)
+    (root / 'pkg' / '__init__.py').write_text('')
+    for args in [('init',), ('config', 'user.name', 'Fixture'), ('config', 'user.email', 'fixture@example.invalid')]:
+        subprocess.run(['git', *args], cwd=root, check=True, capture_output=True)
+    (root / 'pkg' / 'm.py').write_text(
+        "def run(items, flag):\n"
+        "    total = 0\n"
+        "    if flag:\n"
+        "        base = len(items)\n"
+        "        scaled = base * 2\n"
+        "        total = scaled + 1\n"
+        "    for item in items:\n"
+        "        if item < 0:\n"
+        "            break\n"
+        "        total += item\n"
+        "    return total\n"
+    )
+    commit_all(root)
+    return root
+
+
+def test_extract_range_inside_nested_block(tmp_path):
+    import sys
+    sys.path.insert(0, str(SCRIPTS))
+    from extract_ranges import plan
+    from common import publish
+    root = _nested_project(tmp_path)
+    before, after, manifest = plan(root, 'pkg/m.py', 'run', '_scale', 4, 5)
+    op = manifest['operations'][0]
+    assert op['start_line'] == 4 and op['outputs'] == ['scaled']
+    assert 'scaled = _scale(' in after['pkg/m.py']
+    publish(root, before, after, manifest, '.refactor/nested.json', apply=True)
+    ns = {}
+    exec((root / 'pkg' / 'm.py').read_text(), ns)
+    assert ns['run']([1, 2], True) == 8 and ns['run']([1, -1, 5], False) == 1
+
+
+def test_extract_refuses_straddling_and_escaping_loop_control(tmp_path):
+    import sys
+    sys.path.insert(0, str(SCRIPTS))
+    from extract_ranges import plan
+    from common import Refusal
+    root = _nested_project(tmp_path)
+    with pytest.raises(Refusal):
+        plan(root, 'pkg/m.py', 'run', '_x', 5, 7)      # straddles the if block and the for loop
+    with pytest.raises(Refusal):
+        plan(root, 'pkg/m.py', 'run', '_x', 8, 9)      # break whose loop is outside the range
+    before, after, manifest = plan(root, 'pkg/m.py', 'run', '_loop', 7, 10)  # whole loop, break inside: fine
+    assert manifest['operations'][0]['end_line'] == 10

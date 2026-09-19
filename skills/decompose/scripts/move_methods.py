@@ -157,7 +157,8 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
     if source == dest:
         raise Refusal('method moves require a distinct destination')
     before = read_sources(root, [source, dest])
-    info = inventory(before[source], class_name)
+    from quality import config
+    info = inventory(before[source], class_name, plain_decorators=config(root)['plain_decorators'])
     cls = definition(ast.parse(before[source]), class_name)
     if cls.decorator_list or cls.keywords or info['slots']:
         raise Refusal('decorated classes, metaclasses, and __slots__ require design review')

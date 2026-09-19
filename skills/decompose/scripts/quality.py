@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 
 DEFAULTS = dict(module_target=500, module_ceiling=500, function_target=150,
-                class_target=30, max_parameters=6)
+                class_target=30, max_parameters=6, plain_decorators=[])
+# plain_decorators: project decorators known to be plain function wrappers (no descriptor
+# semantics), written exactly as they appear in the class body, e.g. "_serialize_command"
+# or "locks.serialize". A function-shape move re-applies them in the class binding.
 
 
 def config(root='.', path=None):
@@ -21,7 +24,10 @@ def config(root='.', path=None):
         result.update(values)
     if 'REFACTOR_MAX_LINES' in os.environ:
         result['module_ceiling'] = int(os.environ['REFACTOR_MAX_LINES'])
-    if any(type(v) is not int or v < 1 for v in result.values()):
+    decorators = result['plain_decorators']
+    if not isinstance(decorators, list) or any(not isinstance(d, str) or not d for d in decorators):
+        raise ValueError('plain_decorators must be a list of decorator expressions')
+    if any(type(v) is not int or v < 1 for k, v in result.items() if k != 'plain_decorators'):
         raise ValueError('quality settings must be positive integers')
     if result['module_target'] > result['module_ceiling']:
         raise ValueError('module_target must not exceed module_ceiling')

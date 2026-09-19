@@ -34,7 +34,10 @@ the source class's binding, e.g. `run = _operations.run` or
 `build = classmethod(_operations.build)`. Sibling imports use `from . import _operations`.
 Known decorators are `staticmethod`,
 `classmethod`, `property`, and `contextmanager` / `contextlib.contextmanager`.
-Property setters/deleters, stacked/unknown decorators, name mangling, `super`,
+A project may declare its own plain function-wrapper decorators (no descriptor
+semantics) in `.refactor-quality.json` as `plain_decorators`, written as they appear in
+the class body; they are re-applied in the class binding like `contextmanager`.
+Property setters/deleters, stacked/undeclared decorators, name mangling, `super`,
 `__class__`, namespace introspection, global writes, class-dependent signatures,
 metaclasses, decorated classes and slots are refused. Nested `nonlocal` inside an
 otherwise unchanged method can travel with the method; hoisting that closure is refused.
@@ -76,8 +79,9 @@ python3 "$D/extract_ranges.py" --source src/pkg/engine.py --function Engine.run 
 ```
 
 Add `--dest src/pkg/_calculations.py --import-root src` for a separate destination.
-Ranges use the baseline's inclusive line numbers and must cover whole direct statements
-of the selected function. Rope infers parameters and outputs; the oracle independently
+Ranges use the baseline's inclusive line numbers and must cover whole consecutive
+statements of one block of the selected function; the block may be the body of a nested
+`if`/`for`/`with`/`try` statement. A `break`/`continue` whose loop is outside the range is refused. Rope infers parameters and outputs; the oracle independently
 checks the extracted statements, optional return, and exact source call/assignment.
 No similar-occurrence rewriting. Partial loops, return/yield/await/global/nonlocal and
 nested definitions in a range are refused. Complete loops are subject to rope's checks.
