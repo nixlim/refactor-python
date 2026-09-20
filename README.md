@@ -73,6 +73,8 @@ or just say "use a workflow to split app/core/engine.py".
 For several class/function clusters, use `/refactor-python:decompose-workflow` with
 `targets: [{source: "app/core/engine.py", className: "Engine"}]` and `pkgDir: "app"`.
 The separate workflow keeps its resume sequence independent of split-module.
+For type-gated packages, pass `--annotate-self` on function-shape method moves to
+preserve receiver types through type-only class imports and keep moved bodies checked.
 
 Quality is configured in `.refactor-quality.json`:
 

@@ -27,6 +27,8 @@ Import formatting defaults to off: when the project gate enforces isort/import
 ordering (including Ruff's `I` rules), pass `--format-imports` to the selected tool
 in both dry-run and apply commands so sorting is covered by the manifest before
 the per-cluster gate. Do not defer it to finalize.
+For type-gated packages, pass `--annotate-self` on function-shape moves in both
+dry-run and apply commands; the type gate then expects no lost checks as well as no new errors.
 Run `verify.sh --snapshot ... --manifest ... --strict-bodies`, plus the supplied
 `--test-snapshot` and `--test-mode`. A class header/binding changes only as declared.
 Mixins are for tests only; no new production base class. Keep tiers in separate

@@ -19,6 +19,8 @@ and mappings, and the quality/debt report from `quality.py`. Module target/ceili
 function length, class method count, parameter count and cohesion are required checks.
 Mixins are only for collected tests outside the type-gated production package;
 production methods use function bindings. Disconnected methods are separate clusters.
+For type-gated packages, plan function-shape moves with `--annotate-self` in both
+dry-run and apply commands; the type gate then expects no lost checks as well as no new errors.
 Unpinned test regrouping needs scenario names and explicit ID maps; pinned IDs and shard
 memberships must survive. Refused operations are not extractor implementation tasks.
 This mode replaces package conversion and top-level symbol wave rules below.

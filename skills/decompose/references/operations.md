@@ -46,6 +46,35 @@ Property setters/deleters, stacked/undeclared decorators, name mangling, `super`
 metaclasses, decorated classes and slots are refused. Nested `nonlocal` inside an
 otherwise unchanged method can travel with the method; hoisting that closure is refused.
 
+For type-gated packages, pass `--annotate-self` in both dry-run and apply commands.
+This opt-in flag requires `--shape function`. The first positional parameter receives
+the string annotation `"Engine"` for instance methods, properties, context managers
+and declared plain decorators, or `"type[Engine]"` for class methods, using the source
+class's name. Static methods, existing first-parameter annotations and methods without
+a positional parameter are unchanged. Bodies stay verbatim; source class bindings
+use the same form as plain function-shape moves.
+New annotations are string constants with or without `from __future__ import annotations`.
+
+Each destination gains `from typing import TYPE_CHECKING` through the ordinary
+manifest `imports` list, followed directly after the import header by a type-only
+import of the class from its absolute source module:
+
+```python
+if TYPE_CHECKING:
+    from pkg.engine import Engine
+```
+
+An identical existing block is reused on subsequent moves; a different
+`if TYPE_CHECKING:` block is refused with instructions to merge by hand first.
+The operation records `"annotate_self": true` and
+`"type_checking_imports": {"src/pkg/_operations.py": ["from pkg.engine import Engine"]}`.
+Manifests without these fields retain the default behavior. The independent AST
+oracle reconstructs both the annotations and the header block. `--format-imports`
+can merge `TYPE_CHECKING` into an existing typing import without changing the block.
+The class import is never evaluated at runtime, avoiding a runtime import cycle;
+import-linter contracts need `exclude_type_checking_imports = true`.
+The type gate then expects no lost checks as well as no new errors.
+
 Imports are copied from their owning module, resolving relative imports. Existing
 source imports whose last internal reader moved are removed (literal `__all__` exports
 are preserved). For façade roots with an external import contract, opt into
