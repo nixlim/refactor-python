@@ -311,7 +311,7 @@ def test_annotate_self_descriptors_runtime_and_repeated_destination(project, fut
         op = manifest['operations'][0]
         assert op['annotate_self'] is True
         assert op['type_checking_imports'] == {dest: ['from sample.engine import Engine']}
-        assert any('TYPE_CHECKING' in text for text in op['imports'][dest])
+        assert any('TYPE_CHECKING' in text for text in op['imports'][dest]) == (index == 0)
         assert after[source] == plain[source]  # The bindings and decorators are unchanged.
         tree = ast.parse(after[dest])
         blocks = [n for n in tree.body if isinstance(n, ast.If)]

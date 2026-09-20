@@ -1,4 +1,6 @@
 """Adversarial checks for the public CLIs, evidence replay and refusal boundaries."""
+import ast
+import itertools
 import json
 import os
 import shutil
@@ -243,3 +245,141 @@ def test_path_alias_and_non_python_destination(project):
         plan(project, 'sample/engine.py', 'sample/./engine.py', 'Engine', ['calculate'])
     with pytest.raises(Refusal, match='Python'):
         plan(project, 'sample/engine.py', 'sample/helper.txt', 'Engine', ['calculate'])
+
+
+def import_bindings(source):
+    bindings = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bindings.extend(a.asname or a.name.split('.')[0] for a in node.names)
+    return bindings
+
+
+@pytest.mark.parametrize('options', list(itertools.product(list(itertools.product([False, True], repeat=2)), repeat=3)))
+def test_shared_imports_across_three_move_clusters(project, options):
+    source, dest = 'sample/shared.py', 'sample/_shared.py'
+    (project / source).write_text('''from __future__ import annotations
+import math as maths, json as jsonlib
+from typing import Any, Mapping, Sequence, Callable, Iterable
+
+class E:
+    def a(self, value: Any, data: Mapping[str, Sequence[int]]) -> int:
+        return maths.floor(value) + sum(data['items'])
+
+    def b(self, value: Any, fn: Callable[[Any], int]) -> int:
+        return maths.floor(fn(value)) + len(jsonlib.dumps([]))
+
+    def c(self, values: Iterable[int], data: Mapping[str, int]) -> int:
+        return sum(values) + data['extra']
+''')
+    for method, (format_header, annotate_self) in zip(['a', 'b', 'c'], options):
+        commit_all(project)
+        before, after, manifest = plan(project, source, dest, 'E', [method],
+                                       format_header=format_header, annotate_self=annotate_self)
+        assert verify(before, after, manifest)
+        for path in [source, dest]:
+            existing = set(import_bindings(before[path]))
+            additions = import_bindings('\n'.join(manifest['operations'][0]['imports'][path]))
+            assert not existing.intersection(additions)
+            assert set(import_bindings(after[path])) == existing.union(additions) - set(
+                manifest['operations'][0].get('remove_imports', {}).get(path, []))
+            bindings = import_bindings(after[path])
+            assert len(bindings) == len(set(bindings))
+        publish(project, before, after, manifest, f'.refactor/shared-{method}.json', True)
+    run(project, '-c', 'from sample.shared import E; e = E(); '
+        'assert e.a(2.8, {"items": [3, 4]}) == 9; '
+        'assert e.b(5, lambda x: x * 2) == 12; '
+        'assert e.c([1, 2], {"extra": 4}) == 7')
+
+
+@pytest.mark.parametrize('formats', list(itertools.product([False, True], repeat=3)))
+def test_shared_imports_across_three_extract_clusters(project, formats):
+    source, dest = 'sample/shared.py', 'sample/_shared.py'
+    (project / source).write_text('''from __future__ import annotations
+from typing import Any, Mapping, Sequence
+
+def a():
+    data: Any = 1
+    return data
+
+def b():
+    data: Mapping[str, Any] = {'value': 2}
+    return data['value']
+
+def c():
+    data: Sequence[Any] = [3]
+    return data[0]
+''')
+    for name, format_header in zip(['a', 'b', 'c'], formats):
+        commit_all(project)
+        fn = next(n for n in ast.parse((project / source).read_text()).body if isinstance(n, ast.FunctionDef) and n.name == name)
+        before, after, manifest = extract_plan(project, source, name, f'build_{name}',
+                                               fn.body[0].lineno, fn.body[0].end_lineno,
+                                               dest=dest, format_header=format_header)
+        assert verify(before, after, manifest)
+        for path in [source, dest]:
+            additions = import_bindings('\n'.join(manifest['operations'][0]['imports'][path]))
+            assert not set(import_bindings(before[path])).intersection(additions)
+            bindings = import_bindings(after[path])
+            assert len(bindings) == len(set(bindings))
+        publish(project, before, after, manifest, f'.refactor/shared-{name}.json', True)
+    run(project, '-c', 'from sample.shared import a, b, c; assert (a(), b(), c()) == (1, 2, 3)')
+
+
+@pytest.mark.parametrize('operation', ['move', 'extract'])
+@pytest.mark.parametrize('existing', [
+    'from decimal import Decimal as Any\n',
+    'from typing import Mapping as Any\n',
+    'import math as Any\n',
+    'def Any(): pass\n',
+    'class Any: pass\n',
+    'Any = 1\n',
+    'from typing import Any\nAny = 1\n',
+    'from typing import Any\nfrom decimal import Decimal as Any\n',
+    'if True:\n    Any = 1\n',
+])
+def test_shared_imports_refuse_real_destination_clashes(project, operation, existing):
+    source, dest = 'sample/shared.py', 'sample/_shared.py'
+    text = 'from __future__ import annotations\nfrom typing import Any\n'
+    if operation == 'move':
+        text += 'class E:\n    def a(self):\n        data: Any = 1\n        return data\n'
+    else:
+        text += 'def a():\n    data: Any = 1\n    return data\n'
+    (project / source).write_text(text)
+    (project / dest).write_text(existing)
+    with pytest.raises(Refusal, match='import name clash: Any'):
+        if operation == 'move':
+            plan(project, source, dest, 'E', ['a'])
+        else:
+            extract_plan(project, source, 'a', 'build_a', 4, 4, dest=dest)
+    assert (project / source).read_text() == text and (project / dest).read_text() == existing
+
+
+def test_shared_imports_respect_aliases_and_local_bindings(project):
+    source, dest = 'sample/shared.py', 'sample/_shared.py'
+    (project / source).write_text('''from . import _shared, engine
+import math as maths
+from typing import Any as Value, Mapping
+kept = _shared.existing
+class E:
+    def a(self, data: Mapping[str, Value]) -> int:
+        return maths.floor(data['value'])
+''')
+    (project / dest).write_text('''from typing import Sequence, Any as Value
+import math as other_maths
+def existing():
+    Mapping = 1
+    return Mapping
+''')
+    commit_all(project)
+    before, after, manifest = plan(project, source, dest, 'E', ['a'])
+    assert manifest['operations'][0]['imports'][dest] == ['import math as maths', 'from typing import Mapping']
+    assert verify(before, after, manifest)
+    publish(project, before, after, manifest, '.refactor/aliases.json', True)
+    run(project, '-c', 'from sample.shared import E; assert E().a({"value": 2.8}) == 2')
+
+
+def test_shared_imports_preserve_source_class_alias_refusal(project):
+    (project / 'sample/shared.py').write_text('class E:\n    _shared = 1\n    def a(self): return 1\n')
+    with pytest.raises(Refusal, match='source alias already bound: _shared'):
+        plan(project, 'sample/shared.py', 'sample/_shared.py', 'E', ['a'])

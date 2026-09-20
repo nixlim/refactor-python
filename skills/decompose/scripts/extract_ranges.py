@@ -23,6 +23,7 @@ from move_methods import (
     add_imports,
     dependency_imports,
     format_imports,
+    missing_imports,
     repair_source_imports,
 )
 from quality import config
@@ -145,7 +146,9 @@ def plan(root, source, function, name, start=None, end=None, dest=None, nested=N
         dst_module = module_name(resolve(root, dest).relative_to(root_import))
         combined = modified.with_changes(body=[*modified.body, extracted]).code
         imported = dependency_imports(combined, [name], src_module, Path(source).name == '__init__.py')
-        op['imports'] = {source: [f'from {dst_module} import {name}'], dest: imported}
+        imported = missing_imports(before[dest], imported)
+        op['imports'] = {source: missing_imports(before[source], [f'from {dst_module} import {name}'], 'source'),
+                         dest: imported}
         modified = repair_source_imports(before[source], add_imports(modified, op['imports'][source]), op, source, retain_module_api)
         after = {source: modified.code,
                  dest: add_imports(target.with_changes(body=[*target.body, extracted]), imported).code}

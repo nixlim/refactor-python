@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import subprocess
+import symtable
 import sys
 from pathlib import Path
 
@@ -158,6 +159,42 @@ def add_imports(module, statements):
     return module
 
 
+def missing_imports(source, statements, location='destination'):
+    """Reuse identical bindings, refusing other owners; declare only new aliases."""
+    table = symtable.symtable(source, '<imports>', 'exec')
+    assigned = {s.get_name() for s in table.get_symbols() if s.is_assigned()}
+    bound = assigned | {s.get_name() for s in table.get_symbols() if s.is_imported()}
+    origins = {}
+
+    def binding(node, alias):
+        if isinstance(node, ast.ImportFrom):
+            return alias.asname or alias.name, ('from', node.level, node.module, alias.name)
+        return alias.asname or alias.name.split('.')[0], ('import', alias.name)
+
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name, origin = binding(node, alias)
+                origins.setdefault(name, set()).add(origin)
+    added = []
+    for text in statements:
+        node = ast.parse(text).body[0]
+        selected = []
+        for alias in node.names:
+            name, origin = binding(node, alias)
+            if name in bound:
+                if name in assigned or origins.get(name) != {origin}:
+                    raise Refusal(f'{location} import name clash: {name}')
+                continue
+            selected.append(alias)
+            bound.add(name)
+            origins[name] = {origin}
+        if selected:
+            node.names = selected
+            added.append(ast.unparse(node))
+    return added
+
+
 def repair_source_imports(original, updated, op, path, retain=False):
     """Drop newly unused imports; retaining implicit facade exports is opt-in."""
     old_used = {n.id for n in ast.walk(dependency_tree(original)) if isinstance(n, ast.Name)}
@@ -302,10 +339,6 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
     sibling = Path(source).parent == Path(dest).parent and '.' in dst_module
     module_import = f'from . import {alias}' if sibling else (
         f'from {dst_module.rsplit(".", 1)[0]} import {alias}' if '.' in dst_module else f'import {alias}')
-    existing_alias = any(ast.dump(n, include_attributes=False) == ast.dump(ast.parse(module_import).body[0], include_attributes=False)
-                         for n in ast.parse(before[source]).body)
-    if not existing_alias and any(isinstance(n, ast.Name) and n.id == alias for n in ast.walk(ast.parse(before[source]))):
-        raise Refusal(f'source alias already bound: {alias}')
     if target_class and any(isinstance(n, ast.Name) and n.id == target_class or
                             isinstance(n, ast.ClassDef) and n.name == target_class for n in ast.walk(cls)):
         raise Refusal('target class clashes with source')
@@ -314,23 +347,14 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
                                  extra_names={n.id for base in cls.bases for n in ast.walk(base)
                                               if isinstance(n, ast.Name)} if shape == 'class' else ())
     if annotate_self:
-        # Reuse a grouped typing import after a previous cluster's isort pass.
-        typing_import = next((ast.unparse(n) for n in destination.body
-                              if isinstance(n, ast.ImportFrom) and n.module == 'typing' and n.level == 0
-                              and any(a.name == 'TYPE_CHECKING' and a.asname in (None, 'TYPE_CHECKING')
-                                      for a in n.names)), 'from typing import TYPE_CHECKING')
-        if typing_import not in imports:
-            imports.append(typing_import)
+        imports.append('from typing import TYPE_CHECKING')
     source_imports = [module_import] if shape == 'function' else (
         [f'from {dst_module} import {target_class}'] if shape == 'mixin' else [])
-    # Imports must not rebind names already owned by the destination.
-    for text in imports:
-        imported = ast.parse(text).body[0]
-        imported_names = {a.asname or a.name.split('.')[0] for a in imported.names}
-        identical = any(ast.dump(n, include_attributes=False) == ast.dump(imported, include_attributes=False)
-                        for n in destination.body)
-        if imported_names & bound and not identical:
-            raise Refusal('destination import name clash: ' + ', '.join(sorted(imported_names & bound)))
+    imports = missing_imports(before[dest], imports)
+    source_imports = missing_imports(before[source], source_imports, 'source')
+    if shape == 'function' and source_imports and any(
+            isinstance(n, ast.Name) and n.id == alias for n in ast.walk(ast.parse(before[source]))):
+        raise Refusal(f'source alias already bound: {alias}')
     op = dict(kind='move', source=source, dest=dest, **{'class': class_name}, methods=methods,
               shape=shape, target_class=target_class, alias=alias, test_only=test_only,
               imports={source: source_imports, dest: imports})
