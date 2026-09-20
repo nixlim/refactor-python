@@ -203,3 +203,123 @@ def test_second_move_keeps_one_terminal_newline(project):
         assert (project / 'sample/_ops.py').read_bytes().endswith(b'\n')
         assert not (project / 'sample/_ops.py').read_bytes().endswith(b'\n\n')
         commit_all(project)
+
+
+@pytest.mark.parametrize('future', [False, True])
+@pytest.mark.parametrize('body,needed', [
+    ('        data: dict[str, Any] = {}\n        print(data)\n', {'Any'}),
+    ('        data: "dict[str, Any]" = {}\n        print(data)\n', {'Any'}),
+    ('        def nested(value: "Any") -> "Any":\n'
+     '            result: "Any" = value\n            return result\n'
+     '        print(nested(1))\n', {'Any'}),
+    ('        def nested(value: "Any") -> "Callable[[], Any]":\n'
+     '            return lambda: value\n        print(nested(1)())\n', {'Any', 'Callable'}),
+])
+def test_move_copies_annotation_dependencies(project, future, body, needed):
+    source, dest = 'sample/annotations.py', 'sample/_annotations.py'
+    (project / source).write_text(('from __future__ import annotations\n' if future else '') +
+                                 'from typing import Any, Callable\n\nclass E:\n'
+                                 '    def run(self) -> None:\n' + body +
+                                 '    def stay(self) -> None:\n'
+                                 '        data: "Any" = 1\n        print(data)\n')
+    commit_all(project)
+    before, after, manifest = plan(project, source, dest, 'E', ['run'], format_header=True)
+    assert verify(before, after, manifest)
+    imports = {a.name for n in ast.parse(after[dest]).body if isinstance(n, ast.ImportFrom)
+               and n.module == 'typing' for a in n.names}
+    assert imports == needed
+    assert 'from typing import Any' in after[source]  # The remaining string annotation still needs it.
+    publish(project, before, after, manifest, '.refactor/annotations.json', True)
+    for tool_args in [('mypy', '--no-incremental', '--check-untyped-defs'), ('ruff', 'check', '--select', 'F821')]:
+        result = subprocess.run([sys.executable, '-m', *tool_args, source, dest],
+                                cwd=project, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run([sys.executable, '-c', 'from sample.annotations import E; E().run(); E().stay()'],
+                   cwd=project, check=True, capture_output=True)
+
+
+@pytest.mark.parametrize('future', [False, True])
+@pytest.mark.parametrize('quoted', [False, True])
+def test_extract_copies_annotation_dependencies(project, future, quoted):
+    source, dest = 'sample/annotations.py', 'sample/_annotations.py'
+    annotation = '"dict[str, Any]"' if quoted else 'dict[str, Any]'
+    (project / source).write_text(('from __future__ import annotations\n' if future else '') +
+                                 'from typing import Any\n\ndef run() -> None:\n'
+                                 f'    data: {annotation} = {{}}\n    print(data)\n')
+    commit_all(project)
+    fn = next(n for n in ast.parse((project / source).read_text()).body if isinstance(n, ast.FunctionDef))
+    before, after, manifest = extract_plan(project, source, 'run', 'show_data',
+                                           fn.body[0].lineno, fn.body[1].end_lineno, dest=dest)
+    assert verify(before, after, manifest)
+    assert 'from typing import Any' in after[dest]
+    publish(project, before, after, manifest, '.refactor/annotations.json', True)
+    for tool_args in [('mypy', '--no-incremental', '--check-untyped-defs'), ('ruff', 'check', '--select', 'F821')]:
+        result = subprocess.run([sys.executable, '-m', *tool_args, source, dest],
+                                cwd=project, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_annotation_dependencies_respect_scope_and_literal_values(project):
+    source, dest = 'sample/annotations.py', 'sample/_annotations.py'
+    (project / source).write_text('''from __future__ import annotations
+from typing import Annotated as A, Literal as L
+
+class E:
+    def run(self) -> None:
+        from typing import Literal as LocalLiteral
+        class Local:
+            pass
+        def nested(value: "Local") -> "Local":
+            data: "Local" = value
+            return data
+        values: "list[Local]" = [nested(Local())]
+        builtin: "dict[str, int]" = {}
+        state: "L['ready']" = 'ready'
+        marked: "A[int, 'metadata']" = 1
+        local_state: "LocalLiteral['ready']" = 'ready'
+        print(values, builtin, state, marked, local_state)
+''')
+    commit_all(project)
+    before, after, manifest = plan(project, source, dest, 'E', ['run'])
+    assert verify(before, after, manifest)
+    assert manifest['operations'][0]['imports'][dest] == [
+        'from __future__ import annotations', 'from typing import Annotated as A, Literal as L']
+    publish(project, before, after, manifest, '.refactor/annotations.json', True)
+    for tool_args in [('mypy', '--no-incremental', '--check-untyped-defs'), ('ruff', 'check', '--select', 'F821')]:
+        result = subprocess.run([sys.executable, '-m', *tool_args, source, dest],
+                                cwd=project, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_annotation_parameters_and_shadowed_locals_are_not_imports():
+    from move_methods import dependency_imports
+
+    source = '''from __future__ import annotations
+from external import Parameter, Local
+def run(Parameter):
+    class Local: pass
+    parameter: "Parameter"
+    local: "Local"
+    builtin: "list[int]"
+'''
+    assert dependency_imports(source, ['run'], 'sample.annotations') == ['from __future__ import annotations']
+
+
+def test_annotation_import_shadowing_builtin_is_copied():
+    from move_methods import dependency_imports
+
+    source = ('from __future__ import annotations\nfrom decimal import Decimal as int\n'
+              'def run():\n    value: "int"\n')
+    assert dependency_imports(source, ['run'], 'sample.annotations') == [
+        'from __future__ import annotations', 'from decimal import Decimal as int']
+
+
+@pytest.mark.parametrize('owner', ['Payload', 'int'])
+@pytest.mark.parametrize('quoted', [False, True])
+def test_annotation_dependency_still_needs_independent_owner(project, owner, quoted):
+    annotation = f'"{owner}"' if quoted else owner
+    (project / 'sample/annotations.py').write_text('from __future__ import annotations\n'
+                                                 f'class {owner}: pass\nclass E:\n'
+                                                 f'    def run(self):\n        data: {annotation}\n')
+    with pytest.raises(Refusal, match=rf'independent owner.*{owner}: E.run'):
+        plan(project, 'sample/annotations.py', 'sample/_annotations.py', 'E', ['run'])

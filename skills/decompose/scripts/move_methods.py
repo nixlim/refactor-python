@@ -22,20 +22,81 @@ from common import (
 )
 
 
+def dependency_tree(source):
+    """Expand type references for analysis only; symtable then resolves their scopes."""
+    tree = ast.parse(source)
+    special = {'Literal': 'Literal', 'Annotated': 'Annotated'}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {'typing', 'typing_extensions'}:
+            special.update({a.asname or a.name: a.name for a in node.names if a.name in special.values()})
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in {'typing', 'typing_extensions'}:
+                    special.update({f'{alias.asname or alias.name}.{name}': name for name in ('Literal', 'Annotated')})
+
+    class ForwardReferences(ast.NodeTransformer):
+        def visit_Constant(self, node):
+            if isinstance(node.value, str):
+                try:
+                    return self.visit(ast.parse(node.value, mode='eval').body)
+                except SyntaxError:
+                    pass
+            return node
+
+        def visit_Subscript(self, node):
+            kind = special.get(ast.unparse(node.value))
+            if kind == 'Literal':
+                return node  # Literal strings are values, not forward references.
+            if kind == 'Annotated' and isinstance(node.slice, ast.Tuple):
+                node.slice.elts[0] = self.visit(node.slice.elts[0])
+                return node  # Metadata strings are values too.
+            return self.generic_visit(node)
+
+    class Annotations(ast.NodeTransformer):
+        def visit_arg(self, node):
+            if node.annotation:
+                node.annotation = ForwardReferences().visit(node.annotation)
+            return node
+
+        def visit_AnnAssign(self, node):
+            self.generic_visit(node)
+            node.annotation = ForwardReferences().visit(node.annotation)
+            return node
+
+        def visit_FunctionDef(self, node):
+            self.generic_visit(node)
+            if node.returns:
+                node.returns = ForwardReferences().visit(node.returns)
+            return node
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+    Annotations().visit(tree)
+    # Postponed annotations are otherwise omitted from Python's symbol table.
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == '__future__':
+            node.names = [a for a in node.names if a.name != 'annotations']
+    tree.body = [n for n in tree.body if not isinstance(n, ast.ImportFrom) or n.names]
+    return tree
+
+
 def dependency_imports(source, qualnames, source_module, source_is_package=False, include_decorators=True, extra_names=()):
     """Copy imports from their owner, never import back through the source facade.
 
     Globals still defined in source must be extracted first; no silent cycle repair.
     """
     tree = ast.parse(source)
+    analysis = dependency_tree(source)
+    analysis_source = ast.unparse(analysis)
     names = set(extra_names)
     uses = {}
     for q in qualnames:
         node = definition(tree, q)
-        headers = [node.args, *(node.decorator_list if include_decorators else [])]
-        if node.returns:
-            headers.append(node.returns)
-        referenced = global_names(source, q) | {n.id for h in headers for n in ast.walk(h) if isinstance(n, ast.Name)}
+        analysed = definition(analysis, q)
+        headers = [analysed.args, *(analysed.decorator_list if include_decorators else [])]
+        if analysed.returns:
+            headers.append(analysed.returns)
+        referenced = global_names(analysis_source, q) | {n.id for h in headers for n in ast.walk(h) if isinstance(n, ast.Name)}
         names |= referenced
         for name in referenced:
             uses.setdefault(name, []).append(f'{q} (line {node.lineno})')
@@ -47,7 +108,10 @@ def dependency_imports(source, qualnames, source_module, source_is_package=False
     import builtins
     rebound = {n.id for statement in tree.body if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                for n in ast.walk(statement) if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))}
-    names -= set(dir(builtins)) - rebound
+    module_bound = rebound | {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    module_bound |= {a.asname or a.name.split('.')[0] for n in tree.body
+                     if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    names -= set(dir(builtins)) - module_bound
     if names & rebound:
         owner_refusal(names & rebound)
     result, found = [], set()
@@ -96,8 +160,8 @@ def add_imports(module, statements):
 
 def repair_source_imports(original, updated, op, path, retain=False):
     """Drop newly unused imports; retaining implicit facade exports is opt-in."""
-    old_used = {n.id for n in ast.walk(ast.parse(original)) if isinstance(n, ast.Name)}
-    new_used = {n.id for n in ast.walk(ast.parse(updated.code)) if isinstance(n, ast.Name)}
+    old_used = {n.id for n in ast.walk(dependency_tree(original)) if isinstance(n, ast.Name)}
+    new_used = {n.id for n in ast.walk(dependency_tree(updated.code)) if isinstance(n, ast.Name)}
     exported = {n.value for statement in ast.parse(updated.code).body if isinstance(statement, ast.Assign)
                 and any(isinstance(t, ast.Name) and t.id == '__all__' for t in statement.targets)
                 for n in ast.walk(statement.value) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
