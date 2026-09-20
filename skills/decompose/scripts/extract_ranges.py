@@ -16,6 +16,7 @@ from common import (
     publish,
     read_sources,
     resolve,
+    terminal_newline,
 )
 from manifest_oracle import expected, selection
 from move_methods import (
@@ -151,6 +152,7 @@ def plan(root, source, function, name, start=None, end=None, dest=None, nested=N
     manifest = dict(version=1, tier=2, baseline={p: digest(s) for p, s in before.items()}, operations=[op])
     if format_header:
         format_imports(root, after, op)
+    after = {path: terminal_newline(text) for path, text in after.items()}
     return before, after, manifest
 
 

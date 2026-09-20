@@ -27,6 +27,11 @@ def dump(node):
     return ast.dump(node, include_attributes=False)
 
 
+def terminal_newline(text):
+    """Finish generated Python text with exactly one newline."""
+    return text.rstrip('\r\n') + '\n'
+
+
 def resolve(root, name):
     path = (Path(root) / name).resolve()
     if not path.is_relative_to(Path(root).resolve()):

@@ -18,6 +18,7 @@ from common import (
     publish,
     read_sources,
     resolve,
+    terminal_newline,
 )
 
 
@@ -279,6 +280,7 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
              dest: add_imports(target, imports).code}
     if format_header:
         format_imports(root, after, op)
+    after = {path: terminal_newline(text) for path, text in after.items()}
     return before, after, manifest
 
 

@@ -1,6 +1,7 @@
 """End-to-end checks of structural contracts, runtime behavior, and refusals."""
 import ast
 import copy
+import difflib
 import json
 import subprocess
 import sys
@@ -168,3 +169,37 @@ def test_quality(project):
     (project / '.refactor-quality.json').write_text('{"module_target": 1000}')
     with pytest.raises(ValueError, match='ceiling'):
         config(project)
+
+
+@pytest.mark.parametrize('operation', ['move', 'extract'])
+@pytest.mark.parametrize('format_header', [False, True])
+def test_terminal_newline_and_dry_run_match_apply(project, capsys, operation, format_header):
+    source, dest = 'sample/engine.py', 'sample/_ops.py'
+    original = (project / source).read_bytes()
+    if operation == 'move':
+        before, after, manifest = plan(project, source, dest, 'Engine', ['calculate'],
+                                       format_header=format_header)
+    else:
+        fn = next(n for n in ast.parse(original).body if isinstance(n, ast.FunctionDef) and n.name == 'summarize')
+        before, after, manifest = extract_plan(project, source, 'summarize', 'weighted_total',
+                                               fn.body[0].lineno, fn.body[1].end_lineno,
+                                               dest=dest, format_header=format_header)
+    for text in after.values():
+        assert text.endswith('\n') and not text.endswith('\n\n')
+    assert after[source].encode().endswith(original.splitlines(keepends=True)[-1])
+    publish(project, before, after, manifest, '.refactor/newline.json')
+    diff = ''.join(''.join(difflib.unified_diff(before[p].splitlines(True), after[p].splitlines(True),
+                                              fromfile=p, tofile=p)) for p in after)
+    assert capsys.readouterr().out.startswith(diff + '{\n')
+    assert not (project / dest).exists()
+    publish(project, before, after, manifest, '.refactor/newline.json', True)
+    assert all((project / p).read_bytes() == text.encode() for p, text in after.items())
+
+
+def test_second_move_keeps_one_terminal_newline(project):
+    for method in ['calculate', 'closure']:
+        before, after, manifest = plan(project, 'sample/engine.py', 'sample/_ops.py', 'Engine', [method])
+        publish(project, before, after, manifest, f'.refactor/{method}.json', True)
+        assert (project / 'sample/_ops.py').read_bytes().endswith(b'\n')
+        assert not (project / 'sample/_ops.py').read_bytes().endswith(b'\n\n')
+        commit_all(project)
