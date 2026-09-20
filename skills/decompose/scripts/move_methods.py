@@ -153,8 +153,30 @@ def format_imports(root, after, op):
     return after
 
 
+def add_type_checking_import(module, statement):
+    block = cst.parse_statement(f'if TYPE_CHECKING:\n    {statement}\n')
+    tree = ast.parse(module.code)
+    wanted = ast.dump(ast.parse(cst.Module(body=[block]).code).body[0], include_attributes=False)
+    existing = [n for n in tree.body if isinstance(n, ast.If) and
+                isinstance(n.test, ast.Name) and n.test.id == 'TYPE_CHECKING']
+    if existing:
+        if len(existing) != 1 or ast.dump(existing[0], include_attributes=False) != wanted:
+            raise Refusal('destination has a different TYPE_CHECKING block; merge by hand first')
+        return module
+    index = int(bool(tree.body) and isinstance(tree.body[0], ast.Expr) and
+                isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str))
+    while index < len(tree.body) and isinstance(tree.body[index], (ast.Import, ast.ImportFrom)):
+        index += 1
+    body = list(module.body)
+    body.insert(index, block)
+    return module.with_changes(body=body)
+
+
 def plan(root, source, dest, class_name, methods, shape='function', target_class=None,
-         test_only=False, import_root='.', test_snapshot=None, id_map=None, retain_module_api=False, format_header=False):
+         test_only=False, import_root='.', test_snapshot=None, id_map=None, retain_module_api=False, format_header=False,
+         annotate_self=False):
+    if annotate_self and shape != 'function':
+        raise Refusal('--annotate-self requires --shape function')
     if source == dest:
         raise Refusal('method moves require a distinct destination')
     before = read_sources(root, [source, dest])
@@ -227,6 +249,14 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
                                  Path(source).name == '__init__.py', include_decorators=shape != 'function',
                                  extra_names={n.id for base in cls.bases for n in ast.walk(base)
                                               if isinstance(n, ast.Name)} if shape == 'class' else ())
+    if annotate_self:
+        # Reuse a grouped typing import after a previous cluster's isort pass.
+        typing_import = next((ast.unparse(n) for n in destination.body
+                              if isinstance(n, ast.ImportFrom) and n.module == 'typing' and n.level == 0
+                              and any(a.name == 'TYPE_CHECKING' and a.asname in (None, 'TYPE_CHECKING')
+                                      for a in n.names)), 'from typing import TYPE_CHECKING')
+        if typing_import not in imports:
+            imports.append(typing_import)
     source_imports = [module_import] if shape == 'function' else (
         [f'from {dst_module} import {target_class}'] if shape == 'mixin' else [])
     # Imports must not rebind names already owned by the destination.
@@ -240,6 +270,8 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
     op = dict(kind='move', source=source, dest=dest, **{'class': class_name}, methods=methods,
               shape=shape, target_class=target_class, alias=alias, test_only=test_only,
               imports={source: source_imports, dest: imports})
+    if annotate_self:
+        op.update(annotate_self=True, type_checking_imports={dest: [f'from {src_module} import {class_name}']})
     manifest = dict(version=1, tier=1, baseline={p: digest(s) for p, s in before.items()}, operations=[op])
     if id_map:
         manifest['test_id_map'] = id_map
@@ -251,7 +283,16 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
     retained = []
     for stmt in source_class.body.body:
         if isinstance(stmt, cst.FunctionDef) and stmt.name.value in methods:
-            moved.append(stmt.with_changes(decorators=[]) if shape == 'function' else stmt)
+            fn = stmt.with_changes(decorators=[]) if shape == 'function' else stmt
+            if annotate_self and 'staticmethod' not in facts[stmt.name.value]['decorators']:
+                field = 'posonly_params' if fn.params.posonly_params else 'params'
+                params = list(getattr(fn.params, field))
+                if params and params[0].annotation is None:
+                    annotation = (f'type[{class_name}]' if 'classmethod' in facts[stmt.name.value]['decorators']
+                                  else class_name)
+                    params[0] = params[0].with_changes(annotation=cst.Annotation(cst.SimpleString(f'"{annotation}"')))
+                    fn = fn.with_changes(params=fn.params.with_changes(**{field: params}))
+            moved.append(fn)
             if shape == 'function':
                 # Construct independently from the oracle's AST binding implementation.
                 expr = cst.Attribute(cst.Name(alias), cst.Name(stmt.name.value))
@@ -276,8 +317,11 @@ def plan(root, source, dest, class_name, methods, shape='function', target_class
                              body=cst.IndentedBlock(body=moved))]
     target = target.with_changes(body=[*target.body, *moved])
     updated = repair_source_imports(before[source], add_imports(updated, source_imports), op, source, retain_module_api)
+    target = add_imports(target, imports)
+    if annotate_self:
+        target = add_type_checking_import(target, op['type_checking_imports'][dest][0])
     after = {source: updated.code,
-             dest: add_imports(target, imports).code}
+             dest: target.code}
     if format_header:
         format_imports(root, after, op)
     after = {path: terminal_newline(text) for path, text in after.items()}
@@ -300,6 +344,7 @@ def main():
     p.add_argument('--manifest', required=True)
     p.add_argument('--retain-module-api', action='store_true', help='retain newly unused imports only for facade modules')
     p.add_argument('--format-imports', action='store_true', help='optional isort pass, verified by the oracle')
+    p.add_argument('--annotate-self', action='store_true', help='keep function-shape receiver types via TYPE_CHECKING')
     p.add_argument('--apply', action='store_true')
     a = p.parse_args()
     try:
@@ -309,7 +354,7 @@ def main():
         before, after, manifest = plan(a.project, a.source, a.dest, a.class_name, a.methods.split(','),
                                       a.shape, a.target_class, a.test_only, a.import_root, a.test_snapshot,
                                       json.loads(resolve(a.project, a.id_map).read_text()) if a.id_map else None,
-                                      a.retain_module_api, a.format_imports)
+                                      a.retain_module_api, a.format_imports, a.annotate_self)
         publish(a.project, before, after, manifest, a.manifest, a.apply)
     except (Refusal, ValueError, KeyError) as e:
         print(f'REFUSED: {e}', file=sys.stderr)

@@ -117,6 +117,8 @@ def binding(method, alias):
 
 
 def move(trees, op):
+    if op.get('annotate_self') and op['shape'] != 'function':
+        raise Refusal('--annotate-self requires --shape function')
     src, dst = trees[op['source']], trees[op['dest']]
     cls = definition(src, op['class'])
     methods = [definition(cls, name) for name in op['methods']]
@@ -128,6 +130,12 @@ def move(trees, op):
         for method in methods:
             cls.body[cls.body.index(method)] = binding(method, op['alias'])
             fn = copy.deepcopy(method)
+            if op.get('annotate_self'):
+                decorators = {ast.unparse(n) for n in method.decorator_list}
+                positional = [*fn.args.posonlyargs, *fn.args.args]
+                if 'staticmethod' not in decorators and positional and positional[0].annotation is None:
+                    positional[0].annotation = ast.Constant(
+                        value=f'type[{cls.name}]' if 'classmethod' in decorators else cls.name)
             fn.decorator_list = []
             dst.body.append(fn)
     elif op['shape'] in {'mixin', 'class'}:
@@ -279,6 +287,24 @@ def expected(before, manifest):
     handlers[op['kind']](trees, op)
     for path, statements in op.get('imports', {}).items():
         imports(trees[path], statements)
+    for path, statements in op.get('type_checking_imports', {}).items():
+        if not isinstance(statements, list) or len(statements) != 1 or not isinstance(statements[0], str):
+            raise Refusal('type_checking_imports must contain a single from ... import statement')
+        try:
+            nodes = ast.parse(statements[0]).body
+        except SyntaxError as exc:
+            raise Refusal('type_checking_imports must contain a single from ... import statement') from exc
+        if len(nodes) != 1 or not isinstance(nodes[0], ast.ImportFrom):
+            raise Refusal('type_checking_imports must contain a single from ... import statement')
+        block = ast.If(test=ast.Name(id='TYPE_CHECKING', ctx=ast.Load()), body=nodes, orelse=[])
+        tree = trees[path]
+        existing = [n for n in tree.body if isinstance(n, ast.If) and
+                    isinstance(n.test, ast.Name) and n.test.id == 'TYPE_CHECKING']
+        if existing:
+            if len(existing) != 1 or dump(existing[0]) != dump(block):
+                raise Refusal('destination has a different TYPE_CHECKING block; merge by hand first')
+        else:
+            tree.body.insert(header_range(tree)[1], block)
     for path, names in op.get('remove_imports', {}).items():
         remove_imports(trees[path], names)
     return trees

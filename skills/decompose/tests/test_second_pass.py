@@ -1,4 +1,6 @@
 """Regression and direct oracle tests; no mover precondition masks these guards."""
+import ast
+import copy
 import json
 import shutil
 import subprocess
@@ -16,7 +18,7 @@ from class_inventory import census, inventory
 from collect_tests import collect, compare
 from common import Refusal, digest, publish
 from extract_ranges import plan as extract_plan
-from manifest_oracle import verify, verify_allowed_methods, verify_scope
+from manifest_oracle import expected, header_range, verify, verify_allowed_methods, verify_scope
 from move_methods import dependency_imports, plan
 
 
@@ -288,3 +290,214 @@ def test_extract_refuses_straddling_and_escaping_loop_control(tmp_path):
         plan(root, 'pkg/m.py', 'run', '_x', 8, 9)      # break whose loop is outside the range
     before, after, manifest = plan(root, 'pkg/m.py', 'run', '_loop', 7, 10)  # whole loop, break inside: fine
     assert manifest['operations'][0]['end_line'] == 10
+
+
+@pytest.mark.parametrize('future', [False, True])
+@pytest.mark.parametrize('format_header', [False, True])
+def test_annotate_self_descriptors_runtime_and_repeated_destination(project, future, format_header):
+    import libcst as cst
+
+    source, dest = 'sample/engine.py', 'sample/_ops.py'
+    if future:
+        path = project / source
+        path.write_text('from __future__ import annotations\n' + path.read_text())
+    (project / dest).write_text('"""Operations."""\nfrom typing import Any\n\nsentinel: Any = None\n')
+    for index, methods in enumerate([['calculate', 'add', 'build', 'doubled', 'temporary'], ['closure']]):
+        commit_all(project)
+        plain = plan(project, source, dest, 'Engine', methods, format_header=format_header)[1]
+        before, after, manifest = plan(project, source, dest, 'Engine', methods,
+                                       annotate_self=True, format_header=format_header)
+        assert verify(before, after, manifest)
+        op = manifest['operations'][0]
+        assert op['annotate_self'] is True
+        assert op['type_checking_imports'] == {dest: ['from sample.engine import Engine']}
+        assert any('TYPE_CHECKING' in text for text in op['imports'][dest])
+        assert after[source] == plain[source]  # The bindings and decorators are unchanged.
+        tree = ast.parse(after[dest])
+        blocks = [n for n in tree.body if isinstance(n, ast.If)]
+        assert len(blocks) == 1 and tree.body.index(blocks[0]) == header_range(tree)[1]
+        assert ast.unparse(blocks[0]) == 'if TYPE_CHECKING:\n    from sample.engine import Engine'
+        original = next(n for n in cst.parse_module(before[source]).body if isinstance(n, cst.ClassDef))
+        for method in methods:
+            fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == method)
+            annotation = fn.args.args[0].annotation
+            if method == 'add':
+                assert annotation is None
+            else:
+                assert isinstance(annotation, ast.Constant)
+                assert annotation.value == ('type[Engine]' if method == 'build' else 'Engine')
+            old = next(n for n in original.body.body if isinstance(n, cst.FunctionDef) and n.name.value == method)
+            new = next(n for n in cst.parse_module(after[dest]).body if isinstance(n, cst.FunctionDef) and n.name.value == method)
+            assert old.body.deep_equals(new.body)
+        publish(project, before, after, manifest, f'.refactor/annotated-{index}.json', True)
+        subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests'],
+                       cwd=project, check=True, capture_output=True, text=True)
+        if format_header:
+            assert 'from typing import Any, TYPE_CHECKING' in after[dest] or 'from typing import TYPE_CHECKING, Any' in after[dest]
+            subprocess.run([sys.executable, '-m', 'ruff', 'check', '--select', 'I', source, dest],
+                           cwd=project, check=True, capture_output=True, text=True)
+
+
+def test_annotate_self_plain_decorator_and_parameter_rules(project):
+    (project / '.refactor-quality.json').write_text(json.dumps({'plain_decorators': ['serialize']}))
+    source = '''def serialize(fn):
+    return fn
+
+class Engine:
+    @serialize
+    def decorated(receiver, /, value):
+        return value
+
+    def annotated(receiver: object):
+        return receiver
+
+    def no_positional(*, value):
+        return value
+
+    @staticmethod
+    def static(self):
+        return self
+
+    @classmethod
+    def build(receiver, /):
+        return receiver()
+
+    async def async_method(receiver):
+        return receiver
+'''
+    (project / 'sample/custom.py').write_text(source)
+    methods = ['decorated', 'annotated', 'no_positional', 'static', 'build', 'async_method']
+    before, after, manifest = plan(project, 'sample/custom.py', 'sample/_custom.py', 'Engine', methods,
+                                   annotate_self=True)
+    assert verify(before, after, manifest)
+    functions = {n.name: n for n in ast.parse(after['sample/_custom.py']).body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert functions['decorated'].args.posonlyargs[0].annotation.value == 'Engine'
+    assert ast.unparse(functions['annotated'].args.args[0].annotation) == 'object'
+    assert functions['no_positional'].args.kwonlyargs[0].annotation is None
+    assert functions['static'].args.args[0].annotation is None
+    assert functions['build'].args.posonlyargs[0].annotation.value == 'type[Engine]'
+    assert functions['async_method'].args.args[0].annotation.value == 'Engine'
+    assert 'decorated = serialize(_custom.decorated)' in after['sample/custom.py']
+    commit_all(project)
+    publish(project, before, after, manifest, '.refactor/custom.json', True)
+    subprocess.run([sys.executable, '-c', 'from sample.custom import Engine; '
+                    'e = Engine(); assert e.decorated(3) == 3 and e.annotated() is e; '
+                    'assert e.static(4) == 4 and isinstance(e.build(), Engine)'],
+                   cwd=project, check=True, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize('annotate_self', [False, True])
+def test_annotate_self_preserves_mypy_checks_across_two_destinations(project, annotate_self):
+    source = '''class Engine:
+    ctx: int = 1
+
+    def first(self, depth: int) -> int:
+        if depth:
+            return self.second(depth - 1)
+        return self.ctxx
+
+    def second(self, depth: int) -> int:
+        if depth:
+            return self.first(depth - 1)
+        return self.ctx
+'''
+    (project / 'sample/typed.py').write_text(source)
+
+    def errors():
+        result = subprocess.run([sys.executable, '-m', 'mypy', '--no-incremental', '--show-error-codes', 'sample'],
+                                cwd=project, capture_output=True, text=True)
+        assert result.returncode in (0, 1), result.stdout + result.stderr
+        return [line for line in result.stdout.splitlines() if ': error:' in line]
+
+    baseline = errors()
+    assert len(baseline) == 1 and '"ctxx"' in baseline[0] and '[attr-defined]' in baseline[0]
+    for method in ['first', 'second']:
+        commit_all(project)
+        before, after, manifest = plan(project, 'sample/typed.py', f'sample/_{method}.py', 'Engine', [method],
+                                       annotate_self=annotate_self, format_header=True)
+        publish(project, before, after, manifest, f'.refactor/{method}.json', True)
+    final = errors()
+    if annotate_self:
+        assert len(final) == 1 and '"ctxx"' in final[0] and '[attr-defined]' in final[0]
+        assert final[0].startswith('sample/_first.py:')
+    else:
+        assert final == []
+
+
+@pytest.mark.parametrize('shape', ['mixin', 'class'])
+def test_annotate_self_refuses_other_shapes(project, shape):
+    settings = dict(start='tests', top='.', pattern='test*.py', pytest=True, shards={})
+    (project / 'ids.json').write_text(json.dumps(collect(project, settings)))
+    with pytest.raises(Refusal, match='annotate.self.*function'):
+        plan(project, 'tests/test_engine.py', 'tests/_support.py', 'TestEngine', ['test_summary'],
+             shape=shape, target_class='SummaryMixin', test_only=True, test_snapshot='ids.json', annotate_self=True)
+    result = subprocess.run([sys.executable, str(SCRIPTS / 'move_methods.py'), '--source', 'sample/engine.py',
+                             '--dest', 'sample/_ops.py', '--class', 'Engine', '--methods', 'calculate',
+                             '--shape', shape, '--annotate-self', '--manifest', '.refactor/refused.json'],
+                            cwd=project, capture_output=True, text=True)
+    assert result.returncode == 1 and '--annotate-self requires --shape function' in result.stderr
+
+
+def test_annotate_self_cli_and_foreign_block_refusal(project):
+    dest = project / 'sample/_ops.py'
+    command = [sys.executable, str(SCRIPTS / 'move_methods.py'), '--source', 'sample/engine.py',
+               '--dest', 'sample/_ops.py', '--class', 'Engine', '--methods', 'calculate',
+               '--annotate-self', '--format-imports', '--manifest', '.refactor/annotated.json', '--apply']
+    dest.write_text('from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from sample.engine import Other\n')
+    commit_all(project)
+    result = subprocess.run(command, cwd=project, capture_output=True, text=True)
+    assert result.returncode == 1 and 'merge by hand first' in result.stderr
+    dest.write_text('')
+    commit_all(project)
+    result = subprocess.run(command, cwd=project, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'def calculate(self: "Engine"):' in dest.read_text()
+    assert json.loads((project / '.refactor/annotated.json').read_text())['operations'][0]['annotate_self'] is True
+
+
+def test_annotate_self_oracle_rejects_wrong_manifest_and_header(project):
+    before, after, manifest = plan(project, 'sample/engine.py', 'sample/_ops.py', 'Engine', ['calculate'],
+                                   annotate_self=True)
+    wrong = copy.deepcopy(manifest)
+    wrong['operations'][0]['type_checking_imports']['sample/_ops.py'] = ['from sample.engine import Other']
+    with pytest.raises(Refusal, match='undeclared structural change'):
+        verify(before, after, wrong)
+    bad_header = {**after, 'sample/_ops.py': after['sample/_ops.py'].replace('import Engine', 'import Other')}
+    with pytest.raises(Refusal, match='undeclared structural change'):
+        verify(before, bad_header, manifest)
+
+
+@pytest.mark.parametrize('shape', ['mixin', 'class'])
+def test_annotate_self_oracle_itself_refuses_other_shapes(project, shape):
+    before, after, manifest = plan(project, 'sample/engine.py', 'sample/_ops.py', 'Engine', ['calculate'])
+    manifest['operations'][0].update(annotate_self=True, shape=shape, test_only=True, target_class='Helper')
+    with pytest.raises(Refusal, match='annotate.self.*function'):
+        expected(before, manifest)
+
+
+@pytest.mark.parametrize('statements', [
+    [], ['import sample.engine'], ['from sample.engine import Engine; import os'],
+    ['from sample.engine import Engine', 'from sample.engine import Other'],
+    ['not python'], 'from sample.engine import Engine', [42],
+])
+def test_annotate_self_oracle_itself_validates_type_import(project, statements):
+    before, after, manifest = plan(project, 'sample/engine.py', 'sample/_ops.py', 'Engine', ['calculate'])
+    manifest['operations'][0]['type_checking_imports'] = {'sample/_ops.py': statements}
+    with pytest.raises(Refusal, match='single.*from.*import'):
+        expected(before, manifest)
+
+
+@pytest.mark.parametrize('imported', ['Engine', 'Other'])
+def test_annotate_self_oracle_itself_checks_existing_block(project, imported):
+    # Build a plain manifest first: the mover's foreign-block guard must not mask this check.
+    (project / 'sample/_ops.py').write_text(f'from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from sample.engine import {imported}\n')
+    before, after, manifest = plan(project, 'sample/engine.py', 'sample/_ops.py', 'Engine', ['calculate'])
+    manifest['operations'][0].update(annotate_self=True,
+                                     type_checking_imports={'sample/_ops.py': ['from sample.engine import Engine']})
+    if imported == 'Other':
+        with pytest.raises(Refusal, match='merge by hand first'):
+            expected(before, manifest)
+    else:
+        tree = expected(before, manifest)['sample/_ops.py']
+        assert len([n for n in tree.body if isinstance(n, ast.If)]) == 1
