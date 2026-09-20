@@ -4,6 +4,10 @@ All paths are project-relative. Run from the project root. `--import-root` ident
 the Python import root when it differs from the project root (for example `src`).
 Dependencies: Python 3.10+, rope, LibCST, pytest, and the existing lint/type toolchain.
 
+Keep all evidence (snapshots, manifests, inventories, critiques, type deltas) under
+the tracked `.refactor/` directory with unique names. Never store it in scratch or
+temp directories that the environment may prune mid-run.
+
 ## Inventory and quality
 
 ```bash
@@ -124,8 +128,8 @@ Comments/formatting are preserved by LibCST but not proven by the AST oracle; do
 are checked in manifest mode. Legacy snapshot comparisons keep their existing semantics.
 
 ```bash
-python3 "$S/snapshot_bodies.py" snapshot src/pkg tests --out .refactor/cluster-before.json
-python3 "$S/snapshot_bodies.py" compare .refactor/cluster-before.json src/pkg tests \
+python3 "$S/snapshot_bodies.py" snapshot src/pkg --out .refactor/cluster-before.json
+python3 "$S/snapshot_bodies.py" compare .refactor/cluster-before.json src/pkg \
   --manifest .refactor/run-move.json --strict
 ```
 
@@ -133,7 +137,9 @@ Snapshots retain the legacy body hashes and add compact per-file digests, never 
 text. Manifest comparison reconstructs touched baseline files from `base_commit` in
 git and checks the digests. Legacy snapshots still support ordinary split-module
 comparison, including `--allow-changed a,b` for top-level functions.
-The entire snapshot scope must be supplied to compare, including new destinations.
+The per-cluster snapshot scope must equal the gate's `--pkg` path (`src/pkg` in this
+example). A snapshot that also covers tests makes the manifest oracle fail on the
+first test edit. Supply this same scope to compare, including new destinations.
 Sequential manifests use sequential snapshots. Preserve them with their commit SHAs.
 At review, run each comparison at its recorded output commit in a worktree. Compare
 the final sources against those reviewed outputs; any later change needs declared proof.
@@ -185,3 +191,6 @@ Finalize owns lint configuration for moved code: existing source-path per-file i
 may need corresponding destination entries. Review each inherited finding; do not
 blanket-ignore new defects or hand-edit tier-1 bodies to satisfy lint. Header sorting
 must be opted into at planning time so the manifest gate covers it.
+Do not add a Ruff `I001` ignore for destination modules, whether per file or by glob:
+it silences the mover's `--format-imports` result. A temporary glob for relocated
+complexity codes is fine; finalize replaces it with measured per-module entries.

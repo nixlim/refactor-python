@@ -51,9 +51,13 @@ clusters. Test modules cover one scenario family; common helpers live in support
 
 1. **Preflight and freeze.** Run `$S/preflight.sh --decompose`. Work on a clean feature branch;
    preserve unrelated user work. Establish passing behavior tests and type baseline.
-   Snapshot the entire affected parent scope using `$S/snapshot_bodies.py snapshot`.
+   Snapshot exactly the gate's `--pkg` path using `$S/snapshot_bodies.py snapshot`.
+   A wider snapshot that also covers tests makes the manifest oracle fail on the first test edit.
    For tests, use `$D/collect_tests.py snapshot`, including the project's shard settings.
    Record the baseline commit, source snapshot, test IDs, configuration, and census.
+   Keep all evidence (snapshots, manifests, inventories, critiques, type deltas) under
+   the tracked `.refactor/` directory with unique names, never in scratch or temp
+   directories that the environment may prune mid-run.
 2. **Inventory.** Run `$D/class_inventory.py` and/or `$D/function_inventory.py`.
    Review method verdicts and the census; unresolved dynamic sites require investigation.
    Class inventory can take `--seeds` with proposed seam memberships. Resolve reported
@@ -73,9 +77,14 @@ clusters. Test modules cover one scenario family; common helpers live in support
    class patch paths with bindings. Any necessary layout-test update is a separate,
    explicitly justified preparation commit before re-freezing; never weaken behavior tests.
 5. **Extract sequentially per source.** Use `extractor` in a worktree. Freeze a fresh
-   snapshot before each cluster, then execute the approved mover with `--apply`.
+   snapshot before each cluster with scope equal to the gate's `--pkg` path, then
+   execute the approved mover with `--apply`.
    A manifest is tied to this baseline, not the original entire-run snapshot. Store
-   snapshot, manifest and commit SHA together; never overwrite earlier evidence.
+   snapshot, manifest and commit SHA together under tracked `.refactor/`, using unique
+   names; never overwrite earlier evidence or leave it in a prunable scratch directory.
+   Do not add a Ruff `I001` ignore for destinations, per file or by glob: it silences
+   the mover's `--format-imports` result. A temporary glob for relocated complexity
+   codes is fine; finalize replaces it with measured per-module entries.
    Run `verify.sh --manifest ... --snapshot ... --strict-bodies`, plus `--test-snapshot`
    and `--test-mode identity|mapping` for test code. One tier per commit. Merge by SHA,
    rerun the gate, and stop on failure. Re-extract on conflicts instead of resolving a move by hand.

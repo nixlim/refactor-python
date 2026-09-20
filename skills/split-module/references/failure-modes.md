@@ -76,6 +76,11 @@ code, because the oracle and the gate still hold; all of them lose hours.
 | Bad quality JSON breaks an edit hook | The standalone size hook reads only its flag/env setting, never decomposition configuration. Validate JSON separately in planning. |
 | ID count preserved but a test changes shard or identity | Compare exact IDs and per-shard memberships, not counts alone. |
 | Only giant functions moved into smaller modules | Quality report still flags function/class targets; record debt and continue the plan. |
+| Destination module lacks a terminal newline | Fixed in 0.1.2: both movers finish every Python output with exactly one newline, after optional import sorting. |
+| Moved bodies lose self-typed checks | Use `--annotate-self` for function-shape moves in type-gated packages; the type gate must report no lost checks. |
+| Snapshot scope is wider than the gate's `--pkg` | Match the per-cluster snapshot scope to `--pkg`; including tests makes the manifest oracle fail on the first test edit. |
+| Evidence disappears from a pruned directory | Keep snapshots, manifests, inventories, critiques and type deltas under tracked `.refactor/` with unique names, never in scratch or temp directories. |
+| Destination ignore glob includes Ruff `I001` | Remove `I001` from destination ignores, including per-file entries; it silences `--format-imports`. Temporary relocated-complexity globs are fine; finalize replaces them with measured per-module entries. |
 
 The legacy split-module failure modes above still apply. For decompose, whole-file
 manifest checking also rejects undeclared import fixes after extraction.
