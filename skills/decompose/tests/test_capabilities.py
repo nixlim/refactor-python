@@ -173,8 +173,13 @@ def test_quality(project):
 
 @pytest.mark.parametrize('operation', ['move', 'extract'])
 @pytest.mark.parametrize('format_header', [False, True])
-def test_terminal_newline_and_dry_run_match_apply(project, capsys, operation, format_header):
+@pytest.mark.parametrize('source_newline', [False, True])
+def test_terminal_newline_and_dry_run_match_apply(project, capsys, operation, format_header, source_newline):
     source, dest = 'sample/engine.py', 'sample/_ops.py'
+    if not source_newline:
+        path = project / source
+        path.write_bytes(path.read_bytes().rstrip(b'\n'))
+        commit_all(project)
     original = (project / source).read_bytes()
     if operation == 'move':
         before, after, manifest = plan(project, source, dest, 'Engine', ['calculate'],
@@ -186,7 +191,8 @@ def test_terminal_newline_and_dry_run_match_apply(project, capsys, operation, fo
                                                dest=dest, format_header=format_header)
     for text in after.values():
         assert text.endswith('\n') and not text.endswith('\n\n')
-    assert after[source].encode().endswith(original.splitlines(keepends=True)[-1])
+    assert verify(before, after, manifest)
+    assert after[source].encode().endswith(original.splitlines()[-1] + b'\n')
     publish(project, before, after, manifest, '.refactor/newline.json')
     diff = ''.join(''.join(difflib.unified_diff(before[p].splitlines(True), after[p].splitlines(True),
                                               fromfile=p, tofile=p)) for p in after)
