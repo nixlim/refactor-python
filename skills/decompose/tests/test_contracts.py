@@ -383,3 +383,45 @@ def test_shared_imports_preserve_source_class_alias_refusal(project):
     (project / 'sample/shared.py').write_text('class E:\n    _shared = 1\n    def a(self): return 1\n')
     with pytest.raises(Refusal, match='source alias already bound: _shared'):
         plan(project, 'sample/shared.py', 'sample/_shared.py', 'E', ['a'])
+
+
+@pytest.mark.parametrize('operation', ['move', 'extract'])
+@pytest.mark.parametrize('changed', ['source', 'dest'])
+def test_apply_cli_refuses_uncommitted_baseline_without_writes(project, operation, changed):
+    source, dest = 'sample/engine.py', 'sample/_ops.py'
+    (project / dest).write_text('"""Existing destination."""\n')
+    commit_all(project)
+    path = project / (source if changed == 'source' else dest)
+    path.write_text(path.read_text() + '# Uncommitted change.\n')
+    if operation == 'move':
+        script = SCRIPTS / 'move_methods.py'
+        arguments = ['--class', 'Engine', '--methods', 'calculate']
+    else:
+        script = SCRIPTS / 'extract_ranges.py'
+        fn = next(n for n in ast.parse((project / source).read_text()).body
+                  if isinstance(n, ast.FunctionDef) and n.name == 'summarize')
+        arguments = ['--function', 'summarize', '--name', 'weighted_total',
+                     '--start', str(fn.body[0].lineno), '--end', str(fn.body[1].end_lineno)]
+    before = {p.relative_to(project): p.read_bytes() for p in project.rglob('*') if p.is_file()}
+    result = run(project, script, '--source', source, '--dest', dest, *arguments,
+                 '--manifest', '.refactor/uncommitted.json', '--apply', ok=False)
+    assert 'commit the source/destination baseline before --apply' in result.stderr
+    assert {p.relative_to(project): p.read_bytes() for p in project.rglob('*') if p.is_file()} == before
+    assert not (project / '.refactor').exists()
+
+
+def test_manifest_compare_cli_refuses_snapshot_digest_mismatch_without_writes(project):
+    (project / '.refactor').mkdir()
+    snapshot_path, manifest_path = '.refactor/before.json', '.refactor/move.json'
+    run(project, SNAPSHOT, 'snapshot', 'sample', '--out', snapshot_path)
+    before, after, manifest = plan(project, 'sample/engine.py', 'sample/_ops.py', 'Engine', ['calculate'])
+    publish(project, before, after, manifest, manifest_path, True)
+    run(project, SNAPSHOT, 'compare', snapshot_path, 'sample', '--manifest', manifest_path)
+    snapshot = json.loads((project / snapshot_path).read_text())
+    # Keep the manifest and git baseline valid so this check cannot be masked by verify().
+    snapshot['files']['sample/engine.py'] = '0' * 64
+    (project / snapshot_path).write_text(json.dumps(snapshot))
+    files = {p.relative_to(project): p.read_bytes() for p in project.rglob('*') if p.is_file()}
+    result = run(project, SNAPSHOT, 'compare', snapshot_path, 'sample', '--manifest', manifest_path, ok=False)
+    assert 'manifest baseline differs from snapshot' in result.stderr
+    assert {p.relative_to(project): p.read_bytes() for p in project.rglob('*') if p.is_file()} == files
