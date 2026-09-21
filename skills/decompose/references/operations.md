@@ -74,6 +74,8 @@ can merge `TYPE_CHECKING` into an existing typing import without changing the bl
 The class import is never evaluated at runtime, avoiding a runtime import cycle;
 import-linter contracts need `exclude_type_checking_imports = true`.
 The type gate then expects no lost checks as well as no new errors.
+Prefer leaving properties on the class unless they are large: function-shape moves
+use `property(...)`, making their uses `Any` under mypy even with `--annotate-self`.
 
 Imports are copied from their owning module, resolving relative imports. Existing
 source imports whose last internal reader moved are removed (literal `__all__` exports

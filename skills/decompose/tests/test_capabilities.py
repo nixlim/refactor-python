@@ -52,6 +52,28 @@ def test_inventory_and_census(project):
     assert any(b['control'] for b in blocks)
 
 
+@pytest.mark.parametrize('body,verdict,reasons', [
+    ('return 1', 'wrap', []),
+    ('return super().store', 'unsupported', ['super/__class__ depends on defining class']),
+])
+def test_property_inventory_note_preserves_verdict_and_reasons(body, verdict, reasons):
+    source = f'class Engine:\n    @property\n    def store(self) -> int:\n        {body}\n'
+    method = inventory(source, 'Engine')['methods'][0]
+    assert method['verdict'] == verdict
+    assert method['reasons'] == reasons
+    note = method['note']
+    assert 'property(...)' in note and 'Any' in note and 'mypy' in note
+    assert '--annotate-self' in note
+    assert 'on the class unless it is large' in note
+
+
+def test_non_property_inventory_methods_have_no_note(project):
+    methods = inventory((project / 'sample/engine.py').read_text(), 'Engine')['methods']
+    non_properties = [m for m in methods if 'property' not in m['decorators']]
+    assert non_properties
+    assert all('note' not in method for method in non_properties)
+
+
 def test_function_move_descriptors_and_oracle(project, capsys):
     methods = ['calculate', 'add', 'build', 'doubled', 'temporary', 'closure', 'nonlocal_closure']
     before, after, manifest = plan(project, 'sample/engine.py', 'sample/operations.py', 'Engine', methods)

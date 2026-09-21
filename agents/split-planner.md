@@ -21,6 +21,8 @@ Mixins are only for collected tests outside the type-gated production package;
 production methods use function bindings. Disconnected methods are separate clusters.
 For type-gated packages, plan function-shape moves with `--annotate-self` in both
 dry-run and apply commands; the type gate then expects no lost checks as well as no new errors.
+Prefer leaving properties on the class unless they are large: function-shape moves
+use `property(...)`, making their uses `Any` under mypy even with `--annotate-self`.
 Unpinned test regrouping needs scenario names and explicit ID maps; pinned IDs and shard
 memberships must survive. Refused operations are not extractor implementation tasks.
 This mode replaces package conversion and top-level symbol wave rules below.

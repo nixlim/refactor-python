@@ -57,7 +57,7 @@ def method_facts(source, cls, method, plain_decorators=()):
     if any(isinstance(n, (ast.Call, ast.NamedExpr, ast.Lambda))
            for value in [*method.args.defaults, *(x for x in method.args.kw_defaults if x)] for n in ast.walk(value)):
         reasons.append('effectful default evaluation changes execution order')
-    return dict(name=method.name, line=method.lineno, end_line=method.end_lineno,
+    facts = dict(name=method.name, line=method.lineno, end_line=method.end_lineno,
                 decorators=decorators,
                 reads=sorted({n.attr for n in attrs if isinstance(n.ctx, ast.Load)}),
                 writes=sorted({n.attr for n in attrs if isinstance(n.ctx, (ast.Store, ast.Del))}),
@@ -66,6 +66,10 @@ def method_facts(source, cls, method, plain_decorators=()):
                 nonlocal_names=sorted({v for n in nodes if isinstance(n, ast.Nonlocal) for v in n.names}),
                 mangled=mangled, reasons=reasons,
                 verdict='unsupported' if reasons else ('wrap' if decorators else 'ok'))
+    if 'property' in decorators:
+        facts['note'] = ('A function-shape move uses property(...), making its uses Any under mypy even with '
+                         '--annotate-self; prefer leaving this property on the class unless it is large.')
+    return facts
 
 
 def communities(methods, seeds=None, exclude_hubs=None, max_hubs=12):
