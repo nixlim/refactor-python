@@ -265,6 +265,60 @@ def test_extract_copies_annotation_dependencies(project, future, quoted):
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_move_copies_string_parameter_annotation_imports(project):
+    source, dest = 'sample/annotations.py', 'sample/_annotations.py'
+    (project / source).write_text('from typing import Any, Mapping\n\nclass Engine:\n'
+                                 '    def a(self, x: "Mapping[str, Any]") -> int:\n'
+                                 '        return len(x)\n')
+    commit_all(project)
+    before, after, manifest = plan(project, source, dest, 'Engine', ['a'])
+    assert verify(before, after, manifest)
+    tree = ast.parse(after[dest])
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef))
+    assert isinstance(fn.args.args[1].annotation, ast.Constant)
+    assert fn.args.args[1].annotation.value == 'Mapping[str, Any]'
+    assert {a.name for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == 'typing'
+            for a in n.names} == {'Any', 'Mapping'}
+    publish(project, before, after, manifest, '.refactor/string-parameter.json', True)
+    for tool_args in [('mypy', '--no-incremental', '--check-untyped-defs'), ('ruff', 'check', '--select', 'F821')]:
+        result = subprocess.run([sys.executable, '-m', *tool_args, source, dest],
+                                cwd=project, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run([sys.executable, '-c', 'from sample.annotations import Engine; '
+                    'assert Engine().a({"one": 1, "two": None}) == 2'],
+                   cwd=project, check=True, capture_output=True)
+
+
+def test_extract_keeps_string_parameter_annotation_imports_in_source(project):
+    source, dest = 'sample/annotations.py', 'sample/_annotations.py'
+    (project / source).write_text('from typing import Any, Mapping\n\ndef a(x: "Mapping[str, Any]") -> int:\n'
+                                 '    count = len(x)\n    return count\n')
+    commit_all(project)
+    before, after, manifest = extract_plan(project, source, 'a', 'count_items', 4, 4, dest=dest)
+    assert verify(before, after, manifest)
+    original = next(n for n in ast.parse(before[source]).body if isinstance(n, ast.FunctionDef))
+    tree = ast.parse(after[source])
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef))
+    assert ast.dump(fn.args) == ast.dump(original.args)
+    assert fn.args.args[0].annotation.value == 'Mapping[str, Any]'
+    assert {a.name for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == 'typing'
+            for a in n.names} == {'Any', 'Mapping'}
+    target = ast.parse(after[dest])
+    helper = next(n for n in target.body if isinstance(n, ast.FunctionDef))
+    assert [arg.arg for arg in helper.args.args] == ['x']
+    assert all(arg.annotation is None for arg in helper.args.args)
+    assert not any(isinstance(n, (ast.Import, ast.ImportFrom)) for n in target.body)
+    assert manifest['operations'][0]['imports'][dest] == []
+    publish(project, before, after, manifest, '.refactor/string-parameter.json', True)
+    for tool_args in [('mypy', '--no-incremental', '--check-untyped-defs'), ('ruff', 'check', '--select', 'F821')]:
+        result = subprocess.run([sys.executable, '-m', *tool_args, source, dest],
+                                cwd=project, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run([sys.executable, '-c', 'from sample.annotations import a; '
+                    'assert a({"one": 1, "two": None}) == 2'],
+                   cwd=project, check=True, capture_output=True)
+
+
 def test_annotation_dependencies_respect_scope_and_literal_values(project):
     source, dest = 'sample/annotations.py', 'sample/_annotations.py'
     (project / source).write_text('''from __future__ import annotations
